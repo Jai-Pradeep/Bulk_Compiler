@@ -21,6 +21,7 @@ ASTNode* make_assign(ASTNode *l, ASTNode *r);
 
 /* printer */
 void print_ast(ASTNode *node, int indent);
+void check_ast(ASTNode *node);
 
 #endif
 

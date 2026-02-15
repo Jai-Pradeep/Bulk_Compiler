@@ -7,6 +7,9 @@ int yywrap(void) { return 1; }
 %}
 
 %%
+"int" 		{ return INT; }
+"["   		{ return LBRACKET; }
+"]"   		{ return RBRACKET; }
 "+"             { return PLUS; }
 "="             { return ASSIGN; }
 ";"             { return SEMICOLON; }

@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "ast.h"
+#include "symtab.h"
 
 ASTNode* make_id(char *name) {
     ASTNode *n = malloc(sizeof(ASTNode));
@@ -28,6 +29,22 @@ ASTNode* make_assign(ASTNode *l, ASTNode *r) {
     n->name = NULL;
     return n;
 }
+
+
+void check_ast(ASTNode *n) {
+    if (!n) return;
+
+    if (n->type == AST_ID) {
+        if (!lookup_symbol(n->name)) {
+            printf("Error: undeclared variable %s\n", n->name);
+            exit(1);
+        }
+    }
+
+    check_ast(n->left);
+    check_ast(n->right);
+}
+
 
 void print_ast(ASTNode *node, int indent) {
     if (!node) return;
