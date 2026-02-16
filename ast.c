@@ -35,9 +35,47 @@ void check_ast(ASTNode *n) {
     if (!n) return;
 
     if (n->type == AST_ID) {
-        if (!lookup_symbol(n->name)) {
+        Symbol *s = lookup_symbol(n->name);
+        if (!s) {
             printf("Error: undeclared variable %s\n", n->name);
             exit(1);
+        }
+    }
+
+    if (n->type == AST_ARRAY_ADD) {
+        // Both children must be arrays of same size
+        if (n->left && n->right) {
+            Symbol *l = lookup_symbol(n->left->name);
+            Symbol *r = lookup_symbol(n->right->name);
+            if (!l || !r) {
+                printf("Error: undeclared variable in array addition\n");
+                exit(1);
+            }
+            if (l->type != SYM_ARRAY || r->type != SYM_ARRAY) {
+                printf("Error: array addition only allowed for arrays\n");
+                exit(1);
+            }
+            if (l->size != r->size) {
+                printf("Error: array sizes must match for element-wise addition\n");
+                exit(1);
+            }
+        }
+    }
+
+    if (n->type == AST_ASSIGN && n->left && n->right) {
+        Symbol *lhs = lookup_symbol(n->left->name);
+        if (n->right->type == AST_ARRAY_ADD) {
+            if (!lhs || lhs->type != SYM_ARRAY) {
+                printf("Error: array addition assignment only allowed for arrays\n");
+                exit(1);
+            }
+            // Check size match with operands
+            Symbol *l = lookup_symbol(n->right->left->name);
+            Symbol *r = lookup_symbol(n->right->right->name);
+            if (!l || !r || lhs->size != l->size || lhs->size != r->size) {
+                printf("Error: array sizes must match for assignment\n");
+                exit(1);
+            }
         }
     }
 

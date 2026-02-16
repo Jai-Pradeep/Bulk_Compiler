@@ -4,7 +4,8 @@
 typedef enum {
     AST_ID,
     AST_ADD,
-    AST_ASSIGN
+    AST_ASSIGN,
+    AST_ARRAY_ADD
 } ASTNodeType;
 
 typedef struct ASTNode {
@@ -17,6 +18,7 @@ typedef struct ASTNode {
 /* constructors */
 ASTNode* make_id(char *name);
 ASTNode* make_add(ASTNode *l, ASTNode *r);
+ASTNode* make_array_add(ASTNode *l, ASTNode *r);
 ASTNode* make_assign(ASTNode *l, ASTNode *r);
 
 /* printer */
