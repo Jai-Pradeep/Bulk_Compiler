@@ -1,0 +1,21 @@
+// Test: widening cast int32 + int64 -> int64,  int64 + int128 -> int128
+
+int32  x;
+int64  y;
+int128 z;
+int64  result1;
+int128 result2;
+
+x = 10;
+y = 20;
+z = 30;
+
+// int32 + int64 -> should emit cast(x, i32->i64) before add, store as i64
+result1 = x + y;
+
+// int64 + int128 -> should emit cast(result1, i64->i128) before add, store as i128
+result2 = result1 + z;
+
+x = y;
+
+z = x;

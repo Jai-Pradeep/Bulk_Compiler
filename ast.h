@@ -1,94 +1,111 @@
-#ifndef AST_H
-#define AST_H
-
+#pragma once
 #include <string>
+#include <vector>
+#include "ir.h"
 
-class ASTNode {
-
-public:
-
-    virtual void print(int indent = 0) = 0;
-
-    virtual std::string generateIR() = 0;
-
-    virtual ~ASTNode() {}
-
+// ── Base AST node 
+struct ASTNode {
+    IRType irType = IRType::UNKNOWN;
+    virtual ~ASTNode() = default;
+    virtual void        print      (int indent) = 0;
+    virtual std::string generateIR ()           = 0;
 };
 
-class NumberNode : public ASTNode {
-
-public:
-
+// ── Leaf: integer literal 
+struct NumberNode : ASTNode {
     int value;
-
-    NumberNode(int v);
-
-    void print(int indent);
-
-    std::string generateIR();
-
+    explicit NumberNode(int v);
+    void        print      (int indent) override;
+    std::string generateIR ()           override;
 };
 
-class IdentifierNode : public ASTNode {
-
-public:
-
+// ── Leaf: variable reference 
+struct IdentifierNode : ASTNode {
     std::string name;
-
-    IdentifierNode(std::string n);
-
-    void print(int indent);
-
-    std::string generateIR();
-
+    explicit IdentifierNode(std::string n);
+    void        print      (int indent) override;
+    std::string generateIR ()           override;
 };
 
-class ArrayAccessNode : public ASTNode {
-
-public:
-
+// ── Leaf: array element  arr[idx] 
+struct ArrayAccessNode : ASTNode {
     std::string name;
-    ASTNode* index;
-
+    ASTNode*    index;
     ArrayAccessNode(std::string n, ASTNode* i);
-
-    void print(int indent);
-
-    std::string generateIR();
-
+    void        print      (int indent) override;
+    std::string generateIR ()           override;
 };
 
-class BinaryOpNode : public ASTNode {
-
-public:
-
+// ── Binary arithmetic 
+struct BinaryOpNode : ASTNode {
     std::string op;
-
-    ASTNode* left;
-    ASTNode* right;
-
+    ASTNode*    left;
+    ASTNode*    right;
     BinaryOpNode(std::string o, ASTNode* l, ASTNode* r);
-
-    void print(int indent);
-
-    std::string generateIR();
-
+    void        print      (int indent) override;
+    std::string generateIR ()           override;
 };
 
-class AssignmentNode : public ASTNode {
-
-public:
-
+// ── Scalar assignment  name = expr 
+struct AssignmentNode : ASTNode {
     std::string name;
-
-    ASTNode* expr;
-
+    ASTNode*    expr;
     AssignmentNode(std::string n, ASTNode* e);
-
-    void print(int indent);
-
-    std::string generateIR();
-
+    void        print      (int indent) override;
+    std::string generateIR ()           override;
 };
 
-#endif
+// ── Array element assignment  name[idx] = expr 
+struct ArrayElementAssignmentNode : ASTNode {
+    std::string name;
+    ASTNode*    index;
+    ASTNode*    expr;
+    ArrayElementAssignmentNode(std::string n, ASTNode* i, ASTNode* e);
+    void        print      (int indent) override;
+    std::string generateIR ()           override;
+};
+
+// ── Comparison  a < b,  a == b, … 
+struct ComparisonNode : ASTNode {
+    std::string op;
+    ASTNode*    left;
+    ASTNode*    right;
+    ComparisonNode(std::string o, ASTNode* l, ASTNode* r);
+    void        print      (int indent) override;
+    std::string generateIR ()           override;
+};
+
+// ── Statement list 
+// Collects statements as AST nodes WITHOUT emitting IR immediately.
+// generateIR() emits them all in order when called by the owner (ForNode/IfNode).
+struct StatementListNode : ASTNode {
+    std::vector<ASTNode*> stmts;
+    void add(ASTNode* s) { if (s) stmts.push_back(s); }
+    void        print      (int indent) override;
+    std::string generateIR ()           override;
+};
+
+// ── For loop 
+// init : full init assignment (i = 0)    -- ForNode owns and controls emission
+// cond : full comparison expression      -- evaluated at top of each iteration
+// step : full step assignment (i = i+1)  -- evaluated at bottom of each iteration
+// body : StatementListNode               -- emitted between cond check and step
+struct ForNode : ASTNode {
+    ASTNode* init;
+    ASTNode* cond;
+    ASTNode* step;
+    ASTNode* body;
+    ForNode(ASTNode* ini, ASTNode* cnd, ASTNode* stp, ASTNode* bdy);
+    void        print      (int indent) override;
+    std::string generateIR ()           override;
+};
+
+// ── If / if-else 
+struct IfNode : ASTNode {
+    ASTNode* condition;
+    ASTNode* thenBody;   // StatementListNode
+    ASTNode* elseBody;   // StatementListNode or nullptr
+    IfNode(ASTNode* cond, ASTNode* thenB, ASTNode* elseB = nullptr);
+    void        print      (int indent) override;
+    std::string generateIR ()           override;
+};

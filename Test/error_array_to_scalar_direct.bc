@@ -1,0 +1,4 @@
+int x;
+int a[10];
+int b[10];
+x = a + b;                  // ← Error: cannot assign array
