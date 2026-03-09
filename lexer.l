@@ -1,49 +1,51 @@
 %{
-#include <stdio.h>
-#include <string.h>
 #include "parser.tab.h"
-
-int yywrap(void) { return 1; }
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 %}
 
 %%
+
 "int"           { return INT; }
 "float"         { return FLOAT; }
 "char"          { return CHAR; }
-","             { return COMMA; }
-"["             { return LBRACKET; }
+"bool"          { return BOOL; }
 
-[0-9]+           { yylval.id = strdup(yytext); return INT_LITERAL; }
-"]"             { return RBRACKET; }
-"+"             { return PLUS; }
-"="             { return ASSIGN; }
-";"             { return SEMICOLON; }
+"if"            { return IF; }
+"else"          { return ELSE; }
+"while"         { return WHILE; }
+"for"           { return FOR; }
 
-[0-9]+\.[0-9]*([eE][+-]?[0-9]+)?|\.[0-9]+([eE][+-]?[0-9]+)? {
-    yylval.id = strdup(yytext);
-    return FLOAT_LITERAL;
-}
-
-[0-9]+ {
-    yylval.id = strdup(yytext);
-    return INT_LITERAL;
-}
-
-'([^'\\]|\\.)' {
-    yylval.id = strdup(yytext);
-    return CHAR_LITERAL;
-}
+[0-9]+          { yylval.num = atoi(yytext); return NUMBER; }
 
 [a-zA-Z_][a-zA-Z0-9_]* {
     yylval.id = strdup(yytext);
     return ID;
 }
 
-[ \t\n]+        ;
+"+"             { return PLUS; }
+"-"             { return MINUS; }
+"*"             { return MUL; }
+"/"             { return DIV; }
 
-. {
-    printf("Lexer error: invalid character '%s'\n", yytext);
-    exit(1);
-}
+"="             { return ASSIGN; }
+
+";"             { return SEMICOLON; }
+","             { return COMMA; }
+
+"("             { return LPAREN; }
+")"             { return RPAREN; }
+
+"["             { return LBRACKET; }
+"]"             { return RBRACKET; }
+
+[ \t\r\n]+      ;
+
+.               { printf("Unknown character: %s\n", yytext); }
+
 %%
 
+int yywrap() {
+    return 1;
+}

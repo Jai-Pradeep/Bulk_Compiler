@@ -1,115 +1,125 @@
-%code requires {
-    typedef struct ASTNode ASTNode;
-}
-
-
 %{
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
+#include <string>
 #include "ast.h"
 #include "symtab.h"
+#include "ir.h"
 
 void yyerror(const char *s);
 int yylex();
 
-ASTNode *root;
+ASTNode* root;
 %}
 
-%union {
-  char *id;
-  ASTNode *node;
-  int ival;
+%code requires {
+#include "ast.h"
+#include "ir.h"
 }
 
+%union {
+    int num;
+    char* id;
+    ASTNode* node;
+}
 
-%token INT FLOAT CHAR
+%token INT FLOAT CHAR BOOL
+%token IF ELSE WHILE FOR
 %token <id> ID
-%token <id> INT_LITERAL FLOAT_LITERAL CHAR_LITERAL
-%token PLUS ASSIGN SEMICOLON LBRACKET RBRACKET COMMA
+%token <num> NUMBER
 
-%type <node> expr stmt
-%type <ival> type
+%token PLUS MINUS MUL DIV
+%token ASSIGN
+
+%token SEMICOLON COMMA
+%token LPAREN RPAREN
+%token LBRACKET RBRACKET
+
+%left PLUS MINUS
+%left MUL DIV
+
+%type <node> expression assignment
+
 %%
 
 program:
-      decl_list stmt { root = $2; }
-      ;
-
-decl_list:
-	 decl_list decl
-	| /* empty */
-	;
-
-
-// Support multiple declarations and array sizes
-decl:
-    type decl_list SEMICOLON
+      program statement
+    |
     ;
 
-type:
-    INT   { $$ = TYPE_INT; }
-  | FLOAT { $$ = TYPE_FLOAT; }
-  | CHAR  { $$ = TYPE_CHAR; }
+statement:
+      declaration
+    | assignment { root = $1; }
     ;
 
-decl_list:
-    decl_item
-  | decl_list COMMA decl_item
-    ;
+declaration:
 
-decl_item:
-    ID
-      { insert_symbol($1, SYM_SCALAR, $<ival>-2, 0); }
-  | ID LBRACKET INT_LITERAL RBRACKET
-      { insert_symbol($1, SYM_ARRAY, $<ival>-4, atoi($3)); }
-    ;
-
-stmt:
-      ID ASSIGN expr SEMICOLON
+      INT ID SEMICOLON
         {
-          Symbol *s = lookup_symbol($1);
-          if (!s) {
-              printf("Error: undeclared variable %s\n", $1);
-              exit(1);
-          }
-          $$ = make_assign(make_id($1), $3);
-        }
-      ;
+            if(symtab.exists($2)) {
+                printf("Error: redeclaration of %s\n",$2);
+                exit(1);
+            }
 
-expr:
-  ID
-    { $$ = make_id($1); }
-  | INT_LITERAL
-    { $$ = make_id($1); }
-  | FLOAT_LITERAL
-    { $$ = make_id($1); }
-  | CHAR_LITERAL
-    { $$ = make_id($1); }
-  | expr PLUS ID
-    { $$ = make_add($1, make_id($3)); }
-  | expr PLUS INT_LITERAL
-    { $$ = make_add($1, make_id($3)); }
-  | expr PLUS FLOAT_LITERAL
-    { $$ = make_add($1, make_id($3)); }
-  | expr PLUS CHAR_LITERAL
-    { $$ = make_add($1, make_id($3)); }
-  ;
+            symtab.insert($2,"int",false,0);
+        }
+
+    | INT ID LBRACKET NUMBER RBRACKET SEMICOLON
+        {
+            if(symtab.exists($2)) {
+                printf("Error: redeclaration of %s\n",$2);
+                exit(1);
+            }
+
+            symtab.insert($2,"int",true,$4);
+        }
+;
+
+assignment:
+
+      ID ASSIGN expression SEMICOLON
+        {
+            if(!symtab.exists($1)) {
+                printf("Error: variable %s not declared\n",$1);
+                exit(1);
+            }
+
+            $$ = new AssignmentNode($1,$3);
+
+            $$->print(0);
+
+            $$->generateIR();
+
+            printIR();
+        }
+;
+
+expression:
+
+      expression PLUS expression
+        { $$ = new BinaryOpNode("+",$1,$3); }
+
+    | expression MINUS expression
+        { $$ = new BinaryOpNode("-",$1,$3); }
+
+    | expression MUL expression
+        { $$ = new BinaryOpNode("*",$1,$3); }
+
+    | expression DIV expression
+        { $$ = new BinaryOpNode("/",$1,$3); }
+
+    | ID LBRACKET expression RBRACKET
+        { $$ = new ArrayAccessNode($1,$3); }
+
+    | ID
+        { $$ = new IdentifierNode($1); }
+
+    | NUMBER
+        { $$ = new NumberNode($1); }
+;
 
 %%
 
 void yyerror(const char *s) {
     printf("Parse error: %s\n", s);
 }
-
-int main() {
-  if (yyparse() == 0) {
-    printf("\n=== AST ===\n");
-    check_ast(root);
-    print_ast(root, 0);
-  } else {
-    printf("Parsing failed.\n");
-  }
-  return 0;
-}
-

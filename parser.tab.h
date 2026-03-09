@@ -45,11 +45,12 @@
 extern int yydebug;
 #endif
 /* "%code requires" blocks.  */
-#line 1 "parser.y"
+#line 15 "parser.y"
 
-    typedef struct ASTNode ASTNode;
+#include "ast.h"
+#include "ir.h"
 
-#line 53 "parser.tab.h"
+#line 54 "parser.tab.h"
 
 /* Token kinds.  */
 #ifndef YYTOKENTYPE
@@ -63,16 +64,24 @@ extern int yydebug;
     INT = 258,                     /* INT  */
     FLOAT = 259,                   /* FLOAT  */
     CHAR = 260,                    /* CHAR  */
-    ID = 261,                      /* ID  */
-    INT_LITERAL = 262,             /* INT_LITERAL  */
-    FLOAT_LITERAL = 263,           /* FLOAT_LITERAL  */
-    CHAR_LITERAL = 264,            /* CHAR_LITERAL  */
-    PLUS = 265,                    /* PLUS  */
-    ASSIGN = 266,                  /* ASSIGN  */
-    SEMICOLON = 267,               /* SEMICOLON  */
-    LBRACKET = 268,                /* LBRACKET  */
-    RBRACKET = 269,                /* RBRACKET  */
-    COMMA = 270                    /* COMMA  */
+    BOOL = 261,                    /* BOOL  */
+    IF = 262,                      /* IF  */
+    ELSE = 263,                    /* ELSE  */
+    WHILE = 264,                   /* WHILE  */
+    FOR = 265,                     /* FOR  */
+    ID = 266,                      /* ID  */
+    NUMBER = 267,                  /* NUMBER  */
+    PLUS = 268,                    /* PLUS  */
+    MINUS = 269,                   /* MINUS  */
+    MUL = 270,                     /* MUL  */
+    DIV = 271,                     /* DIV  */
+    ASSIGN = 272,                  /* ASSIGN  */
+    SEMICOLON = 273,               /* SEMICOLON  */
+    COMMA = 274,                   /* COMMA  */
+    LPAREN = 275,                  /* LPAREN  */
+    RPAREN = 276,                  /* RPAREN  */
+    LBRACKET = 277,                /* LBRACKET  */
+    RBRACKET = 278                 /* RBRACKET  */
   };
   typedef enum yytokentype yytoken_kind_t;
 #endif
@@ -81,13 +90,13 @@ extern int yydebug;
 #if ! defined YYSTYPE && ! defined YYSTYPE_IS_DECLARED
 union YYSTYPE
 {
-#line 19 "parser.y"
+#line 20 "parser.y"
 
-  char *id;
-  ASTNode *node;
-  int ival;
+    int num;
+    char* id;
+    ASTNode* node;
 
-#line 91 "parser.tab.h"
+#line 100 "parser.tab.h"
 
 };
 typedef union YYSTYPE YYSTYPE;

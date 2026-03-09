@@ -1,29 +1,94 @@
 #ifndef AST_H
 #define AST_H
 
-typedef enum {
-    AST_ID,
-    AST_ADD,
-    AST_ASSIGN,
-    AST_ARRAY_ADD
-} ASTNodeType;
+#include <string>
 
-typedef struct ASTNode {
-    ASTNodeType type;
-    char *name;                 // for ID
-    struct ASTNode *left;       // child 1
-    struct ASTNode *right;      // child 2
-} ASTNode;
+class ASTNode {
 
-/* constructors */
-ASTNode* make_id(char *name);
-ASTNode* make_add(ASTNode *l, ASTNode *r);
-ASTNode* make_array_add(ASTNode *l, ASTNode *r);
-ASTNode* make_assign(ASTNode *l, ASTNode *r);
+public:
 
-/* printer */
-void print_ast(ASTNode *node, int indent);
-void check_ast(ASTNode *node);
+    virtual void print(int indent = 0) = 0;
+
+    virtual std::string generateIR() = 0;
+
+    virtual ~ASTNode() {}
+
+};
+
+class NumberNode : public ASTNode {
+
+public:
+
+    int value;
+
+    NumberNode(int v);
+
+    void print(int indent);
+
+    std::string generateIR();
+
+};
+
+class IdentifierNode : public ASTNode {
+
+public:
+
+    std::string name;
+
+    IdentifierNode(std::string n);
+
+    void print(int indent);
+
+    std::string generateIR();
+
+};
+
+class ArrayAccessNode : public ASTNode {
+
+public:
+
+    std::string name;
+    ASTNode* index;
+
+    ArrayAccessNode(std::string n, ASTNode* i);
+
+    void print(int indent);
+
+    std::string generateIR();
+
+};
+
+class BinaryOpNode : public ASTNode {
+
+public:
+
+    std::string op;
+
+    ASTNode* left;
+    ASTNode* right;
+
+    BinaryOpNode(std::string o, ASTNode* l, ASTNode* r);
+
+    void print(int indent);
+
+    std::string generateIR();
+
+};
+
+class AssignmentNode : public ASTNode {
+
+public:
+
+    std::string name;
+
+    ASTNode* expr;
+
+    AssignmentNode(std::string n, ASTNode* e);
+
+    void print(int indent);
+
+    std::string generateIR();
+
+};
 
 #endif
-
