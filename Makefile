@@ -1,7 +1,7 @@
 CXX     = g++
 CXXFLAGS= -std=c++17 -Wall -Wextra
 
-SRC     = parser.tab.c lex.yy.c main.cpp ast.cpp symtab.cpp ir.cpp
+SRC     = parser.tab.c lex.yy.c main.cpp ast.cpp symtab.cpp ir.cpp depcheck.cpp
 OBJ     = $(SRC:.cpp=.o)
 
 all: compiler

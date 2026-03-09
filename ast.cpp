@@ -1,16 +1,17 @@
 #include "ast.h"
 #include "ir.h"
 #include "symtab.h"
+#include "depcheck.h"
 #include <iostream>
 
 static void indentPrint(int n) { for (int i = 0; i < n; i++) std::cout << "  "; }
 
-// ─── NumberNode ────
+// ─── NumberNode ───────────────────────────────────────────────────────────────
 NumberNode::NumberNode(int v) : value(v) { irType = IRType::INT32; }
 void NumberNode::print(int indent) { indentPrint(indent); std::cout << "Number " << value << "\n"; }
 std::string NumberNode::generateIR() { irType = IRType::INT32; return std::to_string(value); }
 
-// ─── IdentifierNode 
+// ─── IdentifierNode ───────────────────────────────────────────────────────────
 IdentifierNode::IdentifierNode(std::string n) : name(n) {}
 void IdentifierNode::print(int indent) { indentPrint(indent); std::cout << "Identifier " << name << "\n"; }
 std::string IdentifierNode::generateIR() {
@@ -29,7 +30,7 @@ std::string ArrayAccessNode::generateIR() {
     return name + "[" + index->generateIR() + "]";
 }
 
-// ─── BinaryOpNode ──
+// ─── BinaryOpNode ─────────────────────────────────────────────────────────────
 BinaryOpNode::BinaryOpNode(std::string o, ASTNode* l, ASTNode* r) : op(o), left(l), right(r) {}
 void BinaryOpNode::print(int indent) {
     indentPrint(indent); std::cout << "BinaryOp " << op << "\n";
@@ -48,7 +49,7 @@ std::string BinaryOpNode::generateIR() {
     return t;
 }
 
-// ─── AssignmentNode 
+// ─── AssignmentNode ───────────────────────────────────────────────────────────
 AssignmentNode::AssignmentNode(std::string n, ASTNode* e) : name(n), expr(e) {}
 void AssignmentNode::print(int indent) {
     indentPrint(indent); std::cout << "Assignment " << name << "\n";
@@ -93,36 +94,52 @@ std::string AssignmentNode::generateIR() {
         if (!a.isArray || !b.isArray) { std::cerr << "Error: operands must be arrays\n"; exit(1); }
         if (a.size != b.size || a.size != n) { std::cerr << "Error: size mismatch\n"; exit(1); }
         IRType resT = dominantType(a.irType, b.irType);
-        emitForLoop("i", n);
-        std::string lv = emitCastIfNeeded(leftId->name+"[i]", a.irType, resT);
-        std::string rv = emitCastIfNeeded(rightId->name+"[i]", b.irType, resT);
-        std::string t = newTemp();
+
+        std::string iVar, Lstart, Lend;
+        emitParallelLoopHeader(n, iVar, Lstart, Lend);
+
+        std::string lv = emitCastIfNeeded(leftId->name +"["+iVar+"]", a.irType, resT);
+        std::string rv = emitCastIfNeeded(rightId->name+"["+iVar+"]", b.irType, resT);
+        std::string t  = newTemp();
         ir.emplace_back(bin->op, lv, rv, t, resT);
-        ir.emplace_back("=", emitCastIfNeeded(t,resT,lhs.irType), "", name+"[i]", lhs.irType);
+        ir.emplace_back("=", emitCastIfNeeded(t, resT, lhs.irType), "", name+"["+iVar+"]", lhs.irType);
+
+        emitParallelLoopFooter(iVar, Lstart, Lend);
         return name;
     }
     if (leftId && rightNum) {
         Symbol a = symtab.get(leftId->name);
         if (!a.isArray || a.size != n) { std::cerr << "Error: array mismatch\n"; exit(1); }
         IRType resT = dominantType(a.irType, IRType::INT32);
-        emitForLoop("i", n);
-        std::string lv = emitCastIfNeeded(leftId->name+"[i]", a.irType, resT);
-        std::string t = newTemp();
+
+        std::string iVar, Lstart, Lend;
+        emitParallelLoopHeader(n, iVar, Lstart, Lend);
+
+        std::string lv = emitCastIfNeeded(leftId->name+"["+iVar+"]", a.irType, resT);
+        std::string t  = newTemp();
         ir.emplace_back(bin->op, lv, std::to_string(rightNum->value), t, resT);
-        ir.emplace_back("=", emitCastIfNeeded(t,resT,lhs.irType), "", name+"[i]", lhs.irType);
+        ir.emplace_back("=", emitCastIfNeeded(t, resT, lhs.irType), "", name+"["+iVar+"]", lhs.irType);
+
+        emitParallelLoopFooter(iVar, Lstart, Lend);
         return name;
     }
     if (leftId && rightElem) {
         Symbol a = symtab.get(leftId->name), es = symtab.get(rightElem->name);
         if (!a.isArray || a.size != n) { std::cerr << "Error: array mismatch\n"; exit(1); }
         IRType resT = dominantType(a.irType, es.irType);
-        emitForLoop("i", n);
-        std::string elem = rightElem->generateIR();
-        std::string lv = emitCastIfNeeded(leftId->name+"[i]", a.irType, resT);
-        elem = emitCastIfNeeded(elem, es.irType, resT);
-        std::string t = newTemp();
+
+        std::string iVar, Lstart, Lend;
+        emitParallelLoopHeader(n, iVar, Lstart, Lend);
+
+        // rightElem index needs the loop var substituted
+        std::string elem = rightElem->name + "[" + rightElem->index->generateIR() + "]";
+        std::string lv   = emitCastIfNeeded(leftId->name+"["+iVar+"]", a.irType,  resT);
+        elem             = emitCastIfNeeded(elem,                       es.irType, resT);
+        std::string t    = newTemp();
         ir.emplace_back(bin->op, lv, elem, t, resT);
-        ir.emplace_back("=", emitCastIfNeeded(t,resT,lhs.irType), "", name+"[i]", lhs.irType);
+        ir.emplace_back("=", emitCastIfNeeded(t, resT, lhs.irType), "", name+"["+iVar+"]", lhs.irType);
+
+        emitParallelLoopFooter(iVar, Lstart, Lend);
         return name;
     }
     std::cerr << "Error: unsupported array operation\n"; exit(1);
@@ -145,7 +162,7 @@ std::string ArrayElementAssignmentNode::generateIR() {
     return name+"["+idx+"]";
 }
 
-// ─── ComparisonNode 
+// ─── ComparisonNode ───────────────────────────────────────────────────────────
 ComparisonNode::ComparisonNode(std::string o, ASTNode* l, ASTNode* r) : op(o), left(l), right(r) {}
 void ComparisonNode::print(int indent) {
     indentPrint(indent); std::cout << "Comparison " << op << "\n";
@@ -163,7 +180,7 @@ std::string ComparisonNode::generateIR() {
     return t;
 }
 
-// ─── StatementListNode 
+// ─── StatementListNode ────────────────────────────────────────────────────────
 void StatementListNode::print(int indent) {
     for (auto* s : stmts) if (s) s->print(indent);
 }
@@ -172,7 +189,19 @@ std::string StatementListNode::generateIR() {
     return "";
 }
 
-// ─── ForNode 
+// ─── ForNode ─────────────────────────────────────────────────────────────────
+//
+//  Correct three-address IR layout:
+//
+//      <init>            ; i = 0
+//  Lstart:
+//      <cond>            ; t = i < 5
+//      if t == 0 goto Lend
+//      <body>            ; a[i] = i * 2
+//      <step>            ; i = i + 1
+//      goto Lstart
+//  Lend:
+//
 ForNode::ForNode(ASTNode* ini, ASTNode* cnd, ASTNode* stp, ASTNode* bdy)
     : init(ini), cond(cnd), step(stp), body(bdy) {}
 
@@ -185,19 +214,65 @@ void ForNode::print(int indent) {
 }
 
 std::string ForNode::generateIR() {
+
+    // ── Dependency analysis before emitting any IR ────────────────────────────
+    // Extract the loop index variable name from the init node (AssignmentNode)
+    std::string loopVar = "i";  // fallback
+    if (AssignmentNode* a = dynamic_cast<AssignmentNode*>(init))
+        loopVar = a->name;
+
+    DepReport dep = analyzeLoop(body, loopVar);
+
+    // ── Emit parallelism annotation as IR comment ─────────────────────────────
+    switch (dep.kind) {
+        case ParallelKind::FULLY_PARALLEL:
+            ir.emplace_back("comment",
+                "PARALLEL LOOP — fully parallel, all iterations independent"
+                " [SIMD/multi-thread safe]", "", "");
+            for (auto& arr : dep.parallelArrays)
+                ir.emplace_back("comment",
+                    "  parallel array: " + arr + "[" + loopVar + "]", "", "");
+            break;
+
+        case ParallelKind::PARTIAL_PARALLEL:
+            ir.emplace_back("comment",
+                "PARTIALLY PARALLEL LOOP — some iterations can run in parallel", "", "");
+            for (auto& arr : dep.parallelArrays)
+                ir.emplace_back("comment",
+                    "  safe to parallelise: " + arr + "[" + loopVar + "]", "", "");
+            for (auto& [arr, reason] : dep.blockers)
+                ir.emplace_back("comment",
+                    "  DEPENDENCY on " + arr + ": " + reason, "", "");
+            break;
+
+        case ParallelKind::NOT_PARALLEL:
+            ir.emplace_back("comment",
+                "SEQUENTIAL LOOP — loop-carried dependencies prevent parallelism", "", "");
+            for (auto& [arr, reason] : dep.blockers)
+                ir.emplace_back("comment",
+                    "  DEPENDENCY: " + reason, "", "");
+            break;
+
+        case ParallelKind::UNKNOWN:
+            ir.emplace_back("comment",
+                "LOOP — no array accesses detected, parallelism unknown", "", "");
+            break;
+    }
+
+    // ── Emit actual loop IR ───────────────────────────────────────────────────
     std::string Lstart = newLabel();
     std::string Lend   = newLabel();
 
     // 1. Init
     if (init) init->generateIR();
 
-    // 2. Loop header
+    // 2. Loop header label
     emitLabel(Lstart);
 
-    // 3. Condition — emits comparison instruction, returns the result temp
+    // 3. Condition
     std::string condTemp = cond ? cond->generateIR() : "1";
 
-    // 4. Exit if condition is false (0)
+    // 4. Exit branch
     emitIfZero(condTemp, Lend);
 
     // 5. Body
@@ -215,7 +290,23 @@ std::string ForNode::generateIR() {
     return "";
 }
 
-// ─── IfNode 
+// ─── IfNode ───────────────────────────────────────────────────────────────────
+//
+//  Without else:
+//      <cond>
+//      if cond == 0 goto Ldone
+//      <thenBody>
+//  Ldone:
+//
+//  With else:
+//      <cond>
+//      if cond == 0 goto Lelse
+//      <thenBody>
+//      goto Ldone
+//  Lelse:
+//      <elseBody>
+//  Ldone:
+//
 IfNode::IfNode(ASTNode* cond, ASTNode* thenB, ASTNode* elseB)
     : condition(cond), thenBody(thenB), elseBody(elseB) {}
 

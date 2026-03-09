@@ -3,11 +3,11 @@
 #include <fstream>
 #include <stdexcept>
 
-// ── Globals 
+// ── Globals ───────────────────────────────────────────────────────────────────
 std::vector<IRInstruction> ir;
 int tempCount = 0;
 
-// ── Type helpers 
+// ── Type helpers ──────────────────────────────────────────────────────────────
 std::string irTypeName(IRType t) {
     switch (t) {
         case IRType::INT32:  return "i32";
@@ -31,16 +31,16 @@ IRType dominantType(IRType a, IRType b) {
     return IRType::INT32;
 }
 
-// ── IRInstruction ctor 
+// ── IRInstruction ctor ────────────────────────────────────────────────────────
 IRInstruction::IRInstruction(std::string o, std::string a1, std::string a2,
                              std::string r, IRType t)
     : op(o), arg1(a1), arg2(a2), result(r), type(t) {}
 
-// ── Name generators 
+// ── Name generators ───────────────────────────────────────────────────────────
 std::string newTemp()  { return "t" + std::to_string(++tempCount); }
 std::string newLabel() { return "L" + std::to_string(++tempCount); }
 
-// ── Emit helpers (everything goes into the `ir` vector) 
+// ── Emit helpers (everything goes into the `ir` vector) ──────────────────────
 void emitLabel  (const std::string& label)                      { ir.emplace_back("label",        label, "",    ""); }
 void emitGoto   (const std::string& label)                      { ir.emplace_back("goto",         label, "",    ""); }
 void emitIfZero (const std::string& cond, const std::string& lbl){ ir.emplace_back("ifzero_goto",  cond,  lbl,  ""); }
@@ -49,7 +49,60 @@ void emitIf     (const std::string& cond)                       { ir.emplace_bac
 void endIf      ()                                              { ir.emplace_back("comment", "END IF",           "", ""); }
 void endForLoop ()                                              { ir.emplace_back("comment", "END FOR",          "", ""); }
 
-// ── Widening cast 
+// ── Parallel bulk-array loop ──────────────────────────────────────────────────
+//
+// Emits a counted loop over [0, n) with a PARALLEL annotation.
+// Each iteration is independent — no loop-carried dependencies —
+// so any backend can safely vectorise (SIMD) or distribute across threads.
+//
+// IR layout:
+//   // PARALLEL LOOP [0..n-1] — no loop-carried dependencies, SIMD/thread-safe
+//   i_Lx = 0                       [i32]
+// Lx:
+//   tBound = i_Lx < n              [i32]
+//   if tBound == 0 goto Ly
+//   < body inserted by caller >
+//   tStep  = i_Lx + 1              [i32]
+//   i_Lx   = tStep                 [i32]
+//   goto Lx
+// Ly:
+//
+void emitParallelLoopHeader(int n, std::string& outIdxVar,
+                            std::string& outLstart, std::string& outLend)
+{
+    outLstart = newLabel();
+    outLend   = newLabel();
+    outIdxVar = "i_" + outLstart;   // unique per loop — no shadowing in nested loops
+
+    ir.emplace_back("comment",
+        "PARALLEL LOOP [0.." + std::to_string(n-1) +
+        "]  -- no loop-carried dependencies, SIMD/thread-safe", "", "");
+
+    // Init
+    ir.emplace_back("=", "0", "", outIdxVar, IRType::INT32);
+
+    // Header label
+    emitLabel(outLstart);
+
+    // Bound check
+    std::string tBound = newTemp();
+    ir.emplace_back("<", outIdxVar, std::to_string(n), tBound, IRType::INT32);
+    emitIfZero(tBound, outLend);
+}
+
+void emitParallelLoopFooter(const std::string& idxVar,
+                            const std::string& Lstart, const std::string& Lend)
+{
+    // Step
+    std::string tStep = newTemp();
+    ir.emplace_back("+", idxVar, "1", tStep, IRType::INT32);
+    ir.emplace_back("=", tStep, "", idxVar, IRType::INT32);
+
+    emitGoto(Lstart);
+    emitLabel(Lend);
+}
+
+// ── Widening cast ─────────────────────────────────────────────────────────────
 std::string emitCastIfNeeded(const std::string& val, IRType fromType, IRType toType) {
     if (fromType == toType
         || fromType == IRType::UNKNOWN
@@ -65,7 +118,7 @@ std::string emitCastIfNeeded(const std::string& val, IRType fromType, IRType toT
     return t;
 }
 
-// ── Format one instruction as human-readable text 
+// ── Format one instruction as human-readable text ────────────────────────────
 static std::string fmtInstr(const IRInstruction& i) {
     if (i.op == "label")
         return i.arg1 + ":";
@@ -95,14 +148,14 @@ static std::string fmtInstr(const IRInstruction& i) {
            + typeTag(i.type);
 }
 
-// ── Stdout dump (debug) 
+// ── Stdout dump (debug) ───────────────────────────────────────────────────────
 void printIR() {
     std::cout << "\n=== Generated IR ===\n";
     for (auto& ins : ir)
         std::cout << fmtInstr(ins) << "\n";
 }
 
-// ── File output 
+// ── File output ───────────────────────────────────────────────────────────────
 void writeIRToFile(const std::string& filename) {
     std::ofstream out(filename);
     if (!out) { std::cerr << "Error: cannot open " << filename << "\n"; return; }
