@@ -2,23 +2,36 @@
 #include <string>
 #include "symtab.h"
 #include "ir.h"
+#include "regalloc.h"
+#include "codegen.h"  // NEW
 
 extern int yyparse();
 
 int main(int argc, char* argv[]) {
-    // Determine output IR filename
     std::string irFile = "output.ir";
-    if (argc >= 3 && std::string(argv[1]) == "-o")
-        irFile = argv[2];
+    std::string asmFile = "output.asm";  // NEW
+    
+    if (argc >= 3 && std::string(argv[1]) == "-o") {
+        asmFile = argv[2];  // -o specifies assembly output
+        // IR goes to default output.ir
+    }
 
     printf("=== Parsing ===\n");
     yyparse();
     printf("=== Parsing complete ===\n\n");
 
-    symtab.print();       // symbol table to stdout
+    symtab.print();
+    printIR();
 
-    printIR();            // IR summary to stdout (for quick debug)
+    // NEW: Register allocation
+    printf("=== Register Allocation ===\n");
+    RegisterAllocation alloc = allocateRegisters(ir);
+    printf("Allocated registers and %d bytes stack\n", alloc.stackSize);
 
-    writeIRToFile(irFile); // clean IR written to file
+    // NEW: Generate assembly
+    printf("=== Code Generation ===\n");
+    generateAssembly(asmFile, alloc);  // NEW function
+
+    writeIRToFile(irFile);
     return 0;
 }
