@@ -35,8 +35,8 @@
    especially those whose name start with YY_ or yy_.  They are
    private implementation details that can be changed or removed.  */
 
-#ifndef YY_YY_PARSER_TAB_H_INCLUDED
-# define YY_YY_PARSER_TAB_H_INCLUDED
+#ifndef YY_YY_PARSER_TAB_HPP_INCLUDED
+# define YY_YY_PARSER_TAB_HPP_INCLUDED
 /* Debug traces.  */
 #ifndef YYDEBUG
 # define YYDEBUG 0
@@ -45,12 +45,13 @@
 extern int yydebug;
 #endif
 /* "%code requires" blocks.  */
-#line 13 "parser.y"
+#line 14 "parser.y"
 
 #include "ast.h"
 #include "ir.h"
+#include <vector>
 
-#line 54 "parser.tab.h"
+#line 55 "parser.tab.hpp"
 
 /* Token kinds.  */
 #ifndef YYTOKENTYPE
@@ -67,30 +68,33 @@ extern int yydebug;
     FLOAT = 261,                   /* FLOAT  */
     CHAR = 262,                    /* CHAR  */
     BOOL = 263,                    /* BOOL  */
-    IF = 264,                      /* IF  */
-    ELSE = 265,                    /* ELSE  */
-    WHILE = 266,                   /* WHILE  */
-    FOR = 267,                     /* FOR  */
-    ID = 268,                      /* ID  */
-    NUMBER = 269,                  /* NUMBER  */
-    PLUS = 270,                    /* PLUS  */
-    MINUS = 271,                   /* MINUS  */
-    MUL = 272,                     /* MUL  */
-    DIV = 273,                     /* DIV  */
-    ASSIGN = 274,                  /* ASSIGN  */
-    LT = 275,                      /* LT  */
-    GT = 276,                      /* GT  */
-    LE = 277,                      /* LE  */
-    GE = 278,                      /* GE  */
-    EQ = 279,                      /* EQ  */
-    SEMICOLON = 280,               /* SEMICOLON  */
-    COMMA = 281,                   /* COMMA  */
-    LBRACE = 282,                  /* LBRACE  */
-    RBRACE = 283,                  /* RBRACE  */
-    LPAREN = 284,                  /* LPAREN  */
-    RPAREN = 285,                  /* RPAREN  */
-    LBRACKET = 286,                /* LBRACKET  */
-    RBRACKET = 287                 /* RBRACKET  */
+    VOID_KW = 264,                 /* VOID_KW  */
+    IF = 265,                      /* IF  */
+    ELSE = 266,                    /* ELSE  */
+    WHILE = 267,                   /* WHILE  */
+    FOR = 268,                     /* FOR  */
+    FUNC = 269,                    /* FUNC  */
+    RETURN = 270,                  /* RETURN  */
+    ID = 271,                      /* ID  */
+    NUMBER = 272,                  /* NUMBER  */
+    PLUS = 273,                    /* PLUS  */
+    MINUS = 274,                   /* MINUS  */
+    MUL = 275,                     /* MUL  */
+    DIV = 276,                     /* DIV  */
+    ASSIGN = 277,                  /* ASSIGN  */
+    LT = 278,                      /* LT  */
+    GT = 279,                      /* GT  */
+    LE = 280,                      /* LE  */
+    GE = 281,                      /* GE  */
+    EQ = 282,                      /* EQ  */
+    SEMICOLON = 283,               /* SEMICOLON  */
+    COMMA = 284,                   /* COMMA  */
+    LBRACE = 285,                  /* LBRACE  */
+    RBRACE = 286,                  /* RBRACE  */
+    LPAREN = 287,                  /* LPAREN  */
+    RPAREN = 288,                  /* RPAREN  */
+    LBRACKET = 289,                /* LBRACKET  */
+    RBRACKET = 290                 /* RBRACKET  */
   };
   typedef enum yytokentype yytoken_kind_t;
 #endif
@@ -99,14 +103,16 @@ extern int yydebug;
 #if ! defined YYSTYPE && ! defined YYSTYPE_IS_DECLARED
 union YYSTYPE
 {
-#line 18 "parser.y"
+#line 20 "parser.y"
 
     int num;
     char* id;
     ASTNode*           node;
     StatementListNode* stmtlist;
+    std::vector<ParamNode>*   paramlist;
+    std::vector<ASTNode*>*    arglist;
 
-#line 110 "parser.tab.h"
+#line 116 "parser.tab.hpp"
 
 };
 typedef union YYSTYPE YYSTYPE;
@@ -121,4 +127,4 @@ extern YYSTYPE yylval;
 int yyparse (void);
 
 
-#endif /* !YY_YY_PARSER_TAB_H_INCLUDED  */
+#endif /* !YY_YY_PARSER_TAB_HPP_INCLUDED  */

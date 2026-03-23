@@ -322,6 +322,239 @@ void IfNode::print(int indent) {
     }
 }
 
+// ─── WhileNode ────────────────────────────────────────────────────────────────
+//
+//  IR layout:
+//  Lstart:
+//    <cond>
+//    if cond == 0 goto Lend
+//    <body>
+//    goto Lstart
+//  Lend:
+//
+WhileNode::WhileNode(ASTNode* c, ASTNode* b) : cond(c), body(b) {}
+
+void WhileNode::print(int indent) {
+    indentPrint(indent); std::cout << "WHILE\n";
+    indentPrint(indent+1); std::cout << "Cond:\n";
+    if (cond) cond->print(indent+2);
+    indentPrint(indent+1); std::cout << "Body:\n";
+    if (body) body->print(indent+2);
+}
+
+std::string WhileNode::generateIR() {
+    std::string Lstart = newLabel();
+    std::string Lend   = newLabel();
+
+    emitLabel(Lstart);
+
+    std::string condTemp = cond ? cond->generateIR() : "1";
+    emitIfZero(condTemp, Lend);
+
+    if (body) body->generateIR();
+
+    emitGoto(Lstart);
+    emitLabel(Lend);
+    return "";
+}
+
+// ─── LogicalOpNode ────────────────────────────────────────────────────────────
+LogicalOpNode::LogicalOpNode(std::string o, ASTNode* l, ASTNode* r)
+    : op(o), left(l), right(r) {}
+
+void LogicalOpNode::print(int indent) {
+    indentPrint(indent); std::cout << "LogicalOp " << op << "\n";
+    left->print(indent+1); right->print(indent+1);
+}
+
+std::string LogicalOpNode::generateIR() {
+    std::string Lshort = newLabel();   // short-circuit target
+    std::string Ldone  = newLabel();
+
+    std::string t1 = left->generateIR();
+    std::string result = newTemp();
+
+    if (op == "&&") {
+        // If left is false (0), jump straight to done — result stays 0
+        ir.emplace_back("=", t1, "", result, IRType::INT32);
+        emitIfZero(t1, Lshort);
+        std::string t2 = right->generateIR();
+        ir.emplace_back("=", t2, "", result, IRType::INT32);
+        emitLabel(Lshort);
+    } else {
+        // || : If left is true (nonzero), jump straight to done — result stays 1
+        ir.emplace_back("=", t1, "", result, IRType::INT32);
+        // emit: if result != 0 goto Lshort
+        // we only have ifzero, so we negate: tmp = (result == 0), if tmp goto Ldone
+        std::string tnot = newTemp();
+        ir.emplace_back("==", result, "0", tnot, IRType::INT32);
+        emitIfZero(tnot, Lshort);   // if tnot==0 means result was nonzero → skip
+        std::string t2 = right->generateIR();
+        ir.emplace_back("=", t2, "", result, IRType::INT32);
+        emitLabel(Lshort);
+    }
+
+    irType = IRType::INT32;
+    return result;
+}
+
+// ─── LogicalNotNode ───────────────────────────────────────────────────────────
+LogicalNotNode::LogicalNotNode(ASTNode* e) : expr(e) {}
+
+void LogicalNotNode::print(int indent) {
+    indentPrint(indent); std::cout << "LogicalNot\n";
+    expr->print(indent+1);
+}
+
+std::string LogicalNotNode::generateIR() {
+    std::string val = expr->generateIR();
+    std::string t   = newTemp();
+    // t = (val == 0)  →  1 if val was 0, 0 if val was nonzero
+    ir.emplace_back("==", val, "0", t, IRType::INT32);
+    irType = IRType::INT32;
+    return t;
+}
+
+// ─── FunctionDefNode ──────────────────────────────────────────────────────────
+//
+//  IR layout:
+//    func_begin  <name>  [retType]
+//      param <p1> [type]
+//      param <p2> [type]
+//      <body>
+//    func_end  <name>
+//
+FunctionDefNode::FunctionDefNode(std::string retType, std::string n,
+                                 std::vector<ParamNode> p, StatementListNode* b)
+    : returnTypeName(retType), name(n), params(p), body(b) {}
+
+void FunctionDefNode::print(int indent) {
+    indentPrint(indent);
+    std::cout << "FuncDef " << returnTypeName << " " << name << "(";
+    for (int i = 0; i < (int)params.size(); ++i) {
+        if (i) std::cout << ", ";
+        std::cout << params[i].typeName << " " << params[i].name;
+    }
+    std::cout << ")\n";
+    if (body) body->print(indent + 1);
+}
+
+std::string FunctionDefNode::generateIR() {
+    IRType retType = parseType(returnTypeName);
+    irType = retType;
+
+    // Register function signature in symbol table BEFORE entering scope,
+    // so recursive calls resolve correctly.
+    FuncSignature sig;
+    sig.returnType = retType;
+    for (auto& p : params) {
+        sig.paramTypes.push_back(parseType(p.typeName));
+        sig.paramNames.push_back(p.name);
+    }
+    symtab.insertFunc(name, sig);
+
+    // Emit function header
+    emitFuncBegin(name, retType);
+
+    // Enter a new scope for parameters + body
+    symtab.enterScope();
+
+    // Declare each parameter as a local variable in this scope
+    for (auto& p : params) {
+        symtab.insert(p.name, p.typeName, false, 0);
+        emitParam(p.name, parseType(p.typeName));
+    }
+
+    // Emit body
+    if (body) body->generateIR();
+
+    // Leave function scope
+    symtab.leaveScope();
+
+    emitFuncEnd(name);
+    return "";
+}
+
+// ─── FunctionCallNode ─────────────────────────────────────────────────────────
+FunctionCallNode::FunctionCallNode(std::string n, std::vector<ASTNode*> a)
+    : name(n), args(a) {}
+
+void FunctionCallNode::print(int indent) {
+    indentPrint(indent); std::cout << "FuncCall " << name << "\n";
+    for (auto* a : args) if (a) a->print(indent + 1);
+}
+
+std::string FunctionCallNode::generateIR() {
+    if (!symtab.funcExists(name)) {
+        std::cerr << "Error: call to undefined function '" << name << "'\n";
+        exit(1);
+    }
+    FuncSignature sig = symtab.getFunc(name);
+
+    if (args.size() != sig.paramTypes.size()) {
+        std::cerr << "Error: function '" << name << "' expects "
+                  << sig.paramTypes.size() << " arguments, got "
+                  << args.size() << "\n";
+        exit(1);
+    }
+
+    // Evaluate each argument and emit push_arg
+    std::vector<std::string> argTemps;
+    for (int i = 0; i < (int)args.size(); ++i) {
+        std::string v = args[i]->generateIR();
+        v = emitCastIfNeeded(v, args[i]->irType, sig.paramTypes[i]);
+        emitPushArg(v, sig.paramTypes[i]);
+        argTemps.push_back(v);
+    }
+
+    // Result temp (empty string if void)
+    std::string resultTemp = "";
+    if (sig.returnType != IRType::VOID) {
+        resultTemp = newTemp();
+    }
+
+    ir.emplace_back("call", name, "", resultTemp, sig.returnType);
+    irType = sig.returnType;
+    return resultTemp;
+}
+
+// ─── ReturnNode ───────────────────────────────────────────────────────────────
+ReturnNode::ReturnNode(ASTNode* e) : expr(e) {}
+
+void ReturnNode::print(int indent) {
+    indentPrint(indent); std::cout << "Return\n";
+    if (expr) expr->print(indent + 1);
+}
+
+std::string ReturnNode::generateIR() {
+    if (!expr) {
+        emitReturn("", IRType::VOID);
+        irType = IRType::VOID;
+        return "";
+    }
+    std::string val = expr->generateIR();
+    irType = expr->irType;
+    emitReturn(val, irType);
+    return val;
+}
+
+// ─── IfNode ───────────────────────────────────────────────────────────────────
+//
+//  Without else:
+//      <cond>
+//      if cond == 0 goto Ldone
+//      <thenBody>
+//  Ldone:
+//
+//  With else:
+//      <cond>
+//      if cond == 0 goto Lelse
+//      <thenBody>
+//      goto Ldone
+//  Lelse:
+//      <elseBody>
+//  Ldone:
+//
 std::string IfNode::generateIR() {
     std::string Ldone = newLabel();
     std::string Lelse = elseBody ? newLabel() : Ldone;

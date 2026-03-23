@@ -1,21 +1,26 @@
-CXX     = g++
-CXXFLAGS= -std=c++17 -Wall -Wextra
+CXX      = g++
+CXXFLAGS = -std=c++17 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function
 
-SRC     = parser.tab.c lex.yy.c main.cpp ast.cpp symtab.cpp ir.cpp depcheck.cpp
-OBJ     = $(SRC:.cpp=.o)
+GENSRC   = parser.tab.cpp lex.yy.cpp
+CPPSRC   = main.cpp ast.cpp symtab.cpp ir.cpp depcheck.cpp optimizer.cpp
+SRC      = $(GENSRC) $(CPPSRC)
 
 all: compiler
 
-compiler: parser.tab.c lex.yy.c
+compiler: $(SRC)
 	$(CXX) $(CXXFLAGS) $(SRC) -o compiler
 
-parser.tab.c parser.tab.h: parser.y
+# ── Bison: always produce .c/.h first, then rename to .cpp
+#    Works on every bison version (avoids .hpp vs .h ambiguity)
+parser.tab.cpp parser.tab.h: parser.y
 	bison -d parser.y
+	mv parser.tab.c parser.tab.cpp
 
-lex.yy.c: lexer.l parser.tab.h
+# ── Flex
+lex.yy.cpp: lexer.l parser.tab.h
 	flex lexer.l
+	mv lex.yy.c lex.yy.cpp
 
-# ── Run test cases ────────────────────────────────────────────────────────────
 test_for: compiler
 	./compiler -o simple_for.ir < simple_for.bc
 	@echo ""; cat simple_for.ir
@@ -25,4 +30,4 @@ test_bubble: compiler
 	@echo ""; cat bubble_sort.ir
 
 clean:
-	rm -f compiler parser.tab.c parser.tab.h lex.yy.c *.ir
+	rm -f compiler parser.tab.cpp parser.tab.h lex.yy.cpp *.ir *.o

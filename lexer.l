@@ -10,10 +10,14 @@
 "int128"        { return INT128; }
 "int64"         { return INT64; }
 "int32"         { return INT32; }
-"int"           { return INT32; }    /* legacy: "int" maps to int32 */
+"int"           { return INT32; }
 "float"         { return FLOAT; }
 "char"          { return CHAR; }
 "bool"          { return BOOL; }
+"void"          { return VOID_KW; }
+
+"func"          { return FUNC; }
+"return"        { return RETURN; }
 
 "if"            { return IF; }
 "else"          { return ELSE; }
@@ -32,28 +36,29 @@
 "*"             { return MUL; }
 "/"             { return DIV; }
 
+"&&"            { return AND; }
+"||"            { return OR; }
+"!"             { return NOT; }
+
 "="             { return ASSIGN; }
-"<"             { return LT; }
-">"             { return GT; }
+"!="            { return NEQ; }
 "<="            { return LE; }
 ">="            { return GE; }
 "=="            { return EQ; }
+"<"             { return LT; }
+">"             { return GT; }
 
 ";"             { return SEMICOLON; }
 ","             { return COMMA; }
 "{"             { return LBRACE; }
 "}"             { return RBRACE; }
-
 "("             { return LPAREN; }
 ")"             { return RPAREN; }
-
 "["             { return LBRACKET; }
 "]"             { return RBRACKET; }
 
-"//".*          ;   /* single-line comments */
-
+"//".*          ;
 [ \t\r\n]+      ;
-
 .               { printf("Unknown character: %s\n", yytext); }
 
 %%

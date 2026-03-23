@@ -102,6 +102,55 @@ void emitParallelLoopFooter(const std::string& idxVar,
     emitLabel(Lend);
 }
 
+// ── Function IR helpers ───────────────────────────────────────────────────────
+//
+//  IR layout for a function:
+//
+//    func_begin  add  [i32]         ; function starts, return type in type field
+//      param     x    [i32]         ; one per parameter
+//      param     y    [i32]
+//      <body instructions>
+//      return    t5   [i32]         ; return value (or "" for void)
+//    func_end    add                ; marks end
+//
+//  IR layout for a call site:
+//
+//    push_arg    a    [i32]         ; one per argument, left to right
+//    push_arg    b    [i32]
+//    call        add  ""   t7 [i32] ; result in t7 (or "" if void)
+//
+void emitFuncBegin(const std::string& name, IRType retType) {
+    ir.emplace_back("func_begin", name, "", "", retType);
+}
+
+void emitFuncEnd(const std::string& name) {
+    ir.emplace_back("func_end", name, "", "");
+}
+
+void emitParam(const std::string& name, IRType t) {
+    ir.emplace_back("param", name, "", "", t);
+}
+
+void emitPushArg(const std::string& val, IRType t) {
+    ir.emplace_back("push_arg", val, "", "", t);
+}
+
+void emitCall(const std::string& funcName,
+              const std::vector<std::string>& args,
+              const std::string& resultTemp,
+              IRType retType)
+{
+    // Each argument is emitted as a push_arg before the call instruction.
+    // The call instruction itself just names the function and the result temp.
+    for (auto& a : args)
+        ir.emplace_back("push_arg", a, "", "", IRType::UNKNOWN);
+    ir.emplace_back("call", funcName, "", resultTemp, retType);
+}
+
+void emitReturn(const std::string& val, IRType t) {
+    ir.emplace_back("return", val, "", "", t);
+}
+
 // ── Widening cast ─────────────────────────────────────────────────────────────
 std::string emitCastIfNeeded(const std::string& val, IRType fromType, IRType toType) {
     if (fromType == toType
@@ -131,6 +180,33 @@ static std::string fmtInstr(const IRInstruction& i) {
 
     if (i.op == "comment")
         return "    // " + i.arg1;
+
+    if (i.op == "func_begin")
+        return "\n" + i.arg1 + "  [" + irTypeName(i.type) + "] {";
+
+    if (i.op == "func_end")
+        return "}" + std::string("  // end ") + i.arg1 + "\n";
+
+    if (i.op == "param")
+        return "    param " + i.arg1 + "  [" + irTypeName(i.type) + "]";
+
+    if (i.op == "push_arg")
+        return "    push_arg " + i.arg1
+               + (i.type != IRType::UNKNOWN ? ("  [" + irTypeName(i.type) + "]") : "");
+
+    if (i.op == "call") {
+        std::string s = "    call " + i.arg1;
+        if (!i.result.empty()) s += "  ->  " + i.result;
+        if (i.type != IRType::UNKNOWN) s += "  [" + irTypeName(i.type) + "]";
+        return s;
+    }
+
+    if (i.op == "return") {
+        std::string s = "    return";
+        if (!i.arg1.empty()) s += " " + i.arg1;
+        if (i.type != IRType::UNKNOWN) s += "  [" + irTypeName(i.type) + "]";
+        return s;
+    }
 
     auto typeTag = [](IRType t) -> std::string {
         return (t != IRType::UNKNOWN) ? ("  [" + irTypeName(t) + "]") : "";

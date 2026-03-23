@@ -4,31 +4,91 @@
 
 SymbolTable symtab;
 
-bool SymbolTable::exists(std::string name) {
-    return table.find(name) != table.end();
-}
-
-void SymbolTable::insert(std::string name, std::string type, bool isArray, int size) {
+void SymbolTable::insert(const std::string& name,
+                         const std::string& type,
+                         bool isArray, int size)
+{
+    auto& current = scopes.back();
+    if (current.count(name)) {
+        std::cerr << "Error: redeclaration of '" << name << "' in the same scope\n";
+        exit(1);
+    }
     Symbol s;
     s.type    = type;
     s.isArray = isArray;
     s.size    = size;
-    s.irType  = parseType(type);  // resolves "int32" / "int64" / "int128" / "int"
-    table[name] = s;
+    s.irType  = parseType(type);
+    current[name] = s;
 }
 
-Symbol SymbolTable::get(std::string name) {
-    return table[name];
+bool SymbolTable::exists(const std::string& name) const {
+    for (int i = (int)scopes.size() - 1; i >= 0; --i)
+        if (scopes[i].count(name)) return true;
+    return false;
 }
 
-void SymbolTable::print() {
-    std::cout << "\nSymbol Table\n";
-    for (auto& p : table) {
-        std::cout << "  " << p.first
-                  << " : " << p.second.type
-                  << " (" << irTypeName(p.second.irType) << ")";
-        if (p.second.isArray)
-            std::cout << "[" << p.second.size << "]";
-        std::cout << "\n";
+Symbol SymbolTable::get(const std::string& name) const {
+    for (int i = (int)scopes.size() - 1; i >= 0; --i) {
+        auto it = scopes[i].find(name);
+        if (it != scopes[i].end()) return it->second;
+    }
+    std::cerr << "Error: undeclared variable '" << name << "'\n";
+    exit(1);
+}
+
+void SymbolTable::enterScope() { scopes.push_back({}); }
+
+void SymbolTable::leaveScope() {
+    if (scopes.size() <= 1) {
+        std::cerr << "Internal error: cannot pop global scope\n";
+        exit(1);
+    }
+    scopes.pop_back();
+}
+
+int SymbolTable::depth() const { return (int)scopes.size() - 1; }
+
+void SymbolTable::insertFunc(const std::string& name, const FuncSignature& sig) {
+    if (funcs.count(name)) {
+        std::cerr << "Error: redeclaration of function '" << name << "'\n";
+        exit(1);
+    }
+    funcs[name] = sig;
+}
+
+bool SymbolTable::funcExists(const std::string& name) const {
+    return funcs.count(name) > 0;
+}
+
+FuncSignature SymbolTable::getFunc(const std::string& name) const {
+    auto it = funcs.find(name);
+    if (it == funcs.end()) {
+        std::cerr << "Error: undefined function '" << name << "'\n";
+        exit(1);
+    }
+    return it->second;
+}
+
+void SymbolTable::print() const {
+    std::cout << "\n=== Symbol Table ===\n";
+    for (int i = 0; i < (int)scopes.size(); ++i) {
+        std::cout << "  [scope " << i << (i == 0 ? " -- global" : "") << "]\n";
+        for (auto& [name, s] : scopes[i]) {
+            std::cout << "    " << name << " : " << s.type
+                      << " (" << irTypeName(s.irType) << ")";
+            if (s.isArray) std::cout << "[" << s.size << "]";
+            std::cout << "\n";
+        }
+    }
+    if (!funcs.empty()) {
+        std::cout << "  [functions]\n";
+        for (auto& [name, sig] : funcs) {
+            std::cout << "    " << irTypeName(sig.returnType) << " " << name << "(";
+            for (int i = 0; i < (int)sig.paramNames.size(); ++i) {
+                if (i) std::cout << ", ";
+                std::cout << irTypeName(sig.paramTypes[i]) << " " << sig.paramNames[i];
+            }
+            std::cout << ")\n";
+        }
     }
 }
