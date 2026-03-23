@@ -1,0 +1,12 @@
+func int32 add(int32 x, int32 y) {
+    int32 result;
+    result = x + y;
+    return result;
+}
+
+int32 a;
+int32 b;
+int32 c;
+a = 10;
+b = 20;
+c = add(a, b);

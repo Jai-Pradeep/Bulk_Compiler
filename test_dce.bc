@@ -1,0 +1,6 @@
+int32 a;
+int32 b;
+int32 result;
+a = 100;
+b = 200;
+result = a + b;
