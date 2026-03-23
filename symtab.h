@@ -48,6 +48,11 @@ public:
     bool           funcExists (const std::string& name) const;
     FuncSignature  getFunc    (const std::string& name) const;
 
+    // ── Iteration — returns all variables in global scope (scope 0) ──────────
+    const std::unordered_map<std::string, Symbol>& globalSymbols() const {
+        return scopes[0];
+    }
+
     // ── Debug ─────────────────────────────────────────────────────────────────
     void print() const;
 

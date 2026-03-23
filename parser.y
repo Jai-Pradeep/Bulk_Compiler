@@ -51,6 +51,7 @@ int yylex();
 %type <node>      expression statement assignment declaration
 %type <node>      for_stmt if_stmt while_stmt
 %type <node>      func_def func_call_stmt return_stmt
+%type <node>      body_stmt body_assignment
 %type <stmtlist>  body
 %type <id>        type_kw ret_type_kw
 %type <paramlist> param_list param_list_ne
@@ -78,9 +79,36 @@ ret_type_kw:
 
 body:
       /* empty */ { $$ = new StatementListNode(); }
-    | body statement {
+    | body body_stmt {
             $$ = $1;
             $$->add($2);
+        }
+    ;
+
+/* ── body_stmt: statement inside a loop/if — NO generateIR() call ───────── */
+/*    The owning node (ForNode, WhileNode, IfNode) calls generateIR() later   */
+body_stmt:
+      declaration      { $$ = $1; }
+    | body_assignment  { $$ = $1; }
+    | for_stmt         { $$ = $1; }
+    | while_stmt       { $$ = $1; }
+    | if_stmt          { $$ = $1; }
+    | func_call_stmt   { $$ = $1; }
+    | return_stmt      { $$ = $1; }
+    ;
+
+/* ── body_assignment: builds node only, no IR emission ──────────────────── */
+body_assignment:
+      ID ASSIGN expression SEMICOLON
+        {
+            if (!symtab.exists($1)) { printf("Error: %s not declared\n",$1); exit(1); }
+            $$ = new AssignmentNode($1, $3);
+        }
+    | ID LBRACKET expression RBRACKET ASSIGN expression SEMICOLON
+        {
+            if (!symtab.exists($1)) { printf("Error: %s not declared\n",$1); exit(1); }
+            if (!symtab.get($1).isArray) { printf("Error: %s is not an array\n",$1); exit(1); }
+            $$ = new ArrayElementAssignmentNode($1, $3, $6);
         }
     ;
 

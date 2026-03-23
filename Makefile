@@ -2,7 +2,7 @@ CXX      = g++
 CXXFLAGS = -std=c++17 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function
 
 GENSRC   = parser.tab.cpp lex.yy.cpp
-CPPSRC   = main.cpp ast.cpp symtab.cpp ir.cpp depcheck.cpp optimizer.cpp
+CPPSRC   = main.cpp ast.cpp symtab.cpp ir.cpp depcheck.cpp optimizer.cpp codegen.cpp
 SRC      = $(GENSRC) $(CPPSRC)
 
 all: compiler
