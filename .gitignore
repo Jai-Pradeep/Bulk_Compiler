@@ -1,0 +1,15 @@
+# Build output
+compiler
+*.o
+
+# Generated parser/lexer files
+parser.tab.cpp
+parser.tab.h
+lex.yy.cpp
+
+# IR / output files
+*.ir
+*.asm
+*.exe
+# Temp / misc
+*.out
