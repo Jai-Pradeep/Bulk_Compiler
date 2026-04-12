@@ -36,8 +36,8 @@ static bool isLiteral(const std::string& s) {
 }
 
 static bool isParallelComment(const std::string& s) {
-    return s.find("PARALLEL LOOP") != std::string::npos
-        && s.find("no loop-carried") != std::string::npos;
+    return s.find("PARALLEL LOOP") != std::string::npos;
+        // && s.find("no loop-carried") != std::string::npos;
 }
 
 static std::unordered_map<std::string, IRType>
@@ -109,7 +109,7 @@ static ParallelLoop detectParallelLoop(size_t commentPos) {
     ++i;
 
     // tBound = idxVar < N
-    if (i >= ir.size() || ir[i].arg1 != pl.idxVar) return pl;
+    if (i >= ir.size()) return pl;
     pl.boundIdx = i;
     pl.bound    = ir[i].arg2;
     std::string tBound = ir[i].result;
@@ -410,9 +410,9 @@ void generateCode(const std::string& cFile, const std::string& exeName) {
                 final << "\n";
                 final << "    // auto-parallelised by BulkCompiler\n";
                 final << "    #pragma omp parallel for schedule(static)\n";
-                final << "    for (int " << pl.idxVar << "_omp = 0; "
-                      << pl.idxVar << "_omp < " << pl.bound << "; "
-                      << "++" << pl.idxVar << "_omp) {\n";
+                final << "    for (int " << pl.idxVar << " = 0; "
+                      << pl.idxVar << " < " << pl.bound << "; "
+                      << "++" << pl.idxVar << ") {\n";
                 // Body
                 emitRange(final, pl.bodyStart, pl.bodyEnd, "        ");
                 final << "    }\n";
