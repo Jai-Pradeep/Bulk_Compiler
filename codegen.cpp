@@ -101,41 +101,79 @@ struct ParallelLoop {
 static void emitCUDAKernel(const ParallelLoop& pl,
                            const std::string& cuFile,
                            const std::string& exeName) {
-    // For now, emit a simple CUDA kernel stub
-    // This is a template — real version would extract arrays from IR
+
     std::ofstream cu(cuFile);
-    if (!cu) { std::cerr << "Error: cannot open " << cuFile << "\n"; return; }
+    if (!cu) {
+        std::cerr << "Error: cannot open " << cuFile << "\n";
+        return;
+    }
 
     cu << "// Generated CUDA kernel by BulkCompiler\n";
-    cu << "#include <stdio.h>\n\n";
+    cu << "#include <stdio.h>\n";
+    cu << "#include <cuda_runtime.h>\n\n";
 
+    // 🔥 Kernel
     cu << "__global__ void bulkKernel(int *a, int *b, int *c, int N) {\n";
     cu << "    int i = blockIdx.x * blockDim.x + threadIdx.x;\n";
     cu << "    if (i < N) {\n";
+
+    // TODO: replace with IR-driven emission
     cu << "        c[i] = a[i] + b[i];\n";
+
     cu << "    }\n";
     cu << "}\n\n";
 
+    // 🔥 Host code
     cu << "int main() {\n";
-    cu << "    int N = " << pl.bound << ";\n";
+    cu << "    int N = " << pl.bound << ";\n\n";
+
+    cu << "    int *a = (int*)malloc(N * sizeof(int));\n";
+    cu << "    int *b = (int*)malloc(N * sizeof(int));\n";
+    cu << "    int *c = (int*)malloc(N * sizeof(int));\n\n";
+
+    cu << "    for (int i = 0; i < N; i++) {\n";
+    cu << "        a[i] = i;\n";
+    cu << "        b[i] = i * 2;\n";
+    cu << "    }\n\n";
+
     cu << "    int *d_a, *d_b, *d_c;\n";
     cu << "    cudaMalloc(&d_a, N * sizeof(int));\n";
     cu << "    cudaMalloc(&d_b, N * sizeof(int));\n";
     cu << "    cudaMalloc(&d_c, N * sizeof(int));\n\n";
+
+    // 🔥 Copy to GPU
+    cu << "    cudaMemcpy(d_a, a, N * sizeof(int), cudaMemcpyHostToDevice);\n";
+    cu << "    cudaMemcpy(d_b, b, N * sizeof(int), cudaMemcpyHostToDevice);\n\n";
+
+    // 🔥 Launch
     cu << "    int threads = 256;\n";
     cu << "    int blocks = (N + threads - 1) / threads;\n";
     cu << "    bulkKernel<<<blocks, threads>>>(d_a, d_b, d_c, N);\n\n";
+
+    // 🔥 Copy back
+    cu << "    cudaMemcpy(c, d_c, N * sizeof(int), cudaMemcpyDeviceToHost);\n\n";
+
+    // 🔥 Print sample output
+    cu << "    printf(\"c[10] = %d\\n\", c[10]);\n\n";
+
+    // 🔥 Cleanup
     cu << "    cudaFree(d_a);\n";
     cu << "    cudaFree(d_b);\n";
     cu << "    cudaFree(d_c);\n";
+    cu << "    free(a);\n";
+    cu << "    free(b);\n";
+    cu << "    free(c);\n";
+
     cu << "    return 0;\n";
     cu << "}\n";
+
     cu.close();
 
     std::cout << "[Codegen] CUDA kernel written to: " << cuFile << "\n";
 
     std::string cmd = "nvcc " + cuFile + " -o " + exeName + " 2>&1";
     std::cout << "[Codegen] Compiling CUDA: " << cmd << "\n";
+
     int ret = system(cmd.c_str());
     if (ret == 0)
         std::cout << "[Codegen] Success! Run with: ./" << exeName << "\n";
