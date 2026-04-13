@@ -8,6 +8,8 @@
 //  -O1  (level 1)  one round of:
 //                    - constant folding
 //                    - copy propagation
+//                    - common subexpression elimination
+//                   - loop-invariant code motion
 //                    - dead code elimination
 //
 //  -O2  (level 2)  same passes but repeated until fully stable

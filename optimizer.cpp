@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 #include <iostream>
+#include <set>
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -131,6 +132,169 @@ static bool deadCodeElimination() {
     return ir.size() < before;
 }
 
+static bool isBinaryOp(const std::string& op) {
+    return op == "+" || op == "-" || op == "*" || op == "/" ||
+           op == "<" || op == ">" || op == "<=" || op == ">=" ||
+           op == "==" || op == "!=";
+}
+
+static bool commonSubexpressionElimination() {
+    bool changed = false;
+
+    std::unordered_map<std::string, std::string> exprMap;
+    // key -> result temp
+
+    for (auto& ins : ir) {
+
+        // Reset at control flow boundaries
+        if (ins.op == "label" ||
+            ins.op == "goto" ||
+            ins.op == "ifzero_goto" ||
+            ins.op == "func_begin" ||
+            ins.op == "func_end") {
+            exprMap.clear();
+            continue;
+        }
+
+        // Only consider binary operations
+        if (!isBinaryOp(ins.op)) {
+            // If variable is redefined → invalidate expressions using it
+            if (!ins.result.empty()) {
+                for (auto it = exprMap.begin(); it != exprMap.end(); ) {
+                    if (it->first.find("|" + ins.result) != std::string::npos ||
+                        it->first.find(ins.result + "|") != std::string::npos)
+                        it = exprMap.erase(it);
+                    else ++it;
+                }
+            }
+            continue;
+        }
+
+        // Build key
+        std::string key = ins.op + "|" + ins.arg1 + "|" + ins.arg2;
+
+        // Check if already computed
+        if (exprMap.count(key)) {
+            // Replace with copy
+            ins.op = "=";
+            ins.arg1 = exprMap[key];
+            ins.arg2 = "";
+            changed = true;
+        } else {
+            exprMap[key] = ins.result;
+        }
+    }
+
+    return changed;
+}
+
+static bool isSafeOp(const std::string& op) {
+    return op == "+" || op == "-" || op == "*" || op == "/";
+}
+
+static bool usesVar(const std::string& expr, const std::string& var) {
+    if (var.empty()) return false;
+    return expr.find(var) != std::string::npos;
+}
+
+
+static bool loopInvariantCodeMotion() {
+    bool changed = false;
+
+    for (size_t i = 0; i < ir.size(); ++i) {
+
+        // Detect loop start
+        if (ir[i].op != "label") continue;
+        std::string Lstart = ir[i].arg1;
+
+        // Find back-edge
+        size_t loopEnd = i + 1;
+        bool found = false;
+
+        for (; loopEnd < ir.size(); ++loopEnd) {
+            if (ir[loopEnd].op == "goto" &&
+                ir[loopEnd].arg1 == Lstart) {
+                found = true;
+                break;
+            }
+        }
+
+        if (!found) continue;
+
+        size_t loopStart = i + 1;
+
+        // 🔥 Step 0: detect loop variable
+        std::string loopVar;
+        for (size_t j = i; j < loopStart && j < ir.size(); ++j) {
+            if (ir[j].op == "=" && ir[j].arg1 == "0") {
+                loopVar = ir[j].result;
+                break;
+            }
+        }
+
+        if (loopVar.empty()) continue; // safety
+
+        // Step 1: collect modified vars
+        std::set<std::string> modified;
+        for (size_t j = loopStart; j < loopEnd; ++j) {
+            if (!ir[j].result.empty())
+                modified.insert(ir[j].result);
+        }
+
+        // Step 2: find invariants
+        std::vector<size_t> invariants;
+
+        for (size_t j = loopStart; j < loopEnd; ++j) {
+            auto& ins = ir[j];
+
+            if (!isSafeOp(ins.op)) continue;
+
+            // Skip if result is modified later (conservative)
+            if (modified.count(ins.result)) continue;
+
+            // Check operands
+            bool arg1_ok =
+                (isConstant(ins.arg1) ||
+                (!modified.count(ins.arg1) && !usesVar(ins.arg1, loopVar)));
+
+            bool arg2_ok =
+                (isConstant(ins.arg2) ||
+                (!modified.count(ins.arg2) && !usesVar(ins.arg2, loopVar)));
+
+            // 🚫 CRITICAL: reject array accesses like a[i]
+            if (usesVar(ins.arg1, loopVar) || usesVar(ins.arg2, loopVar))
+                continue;
+
+            if (arg1_ok && arg2_ok) {
+                invariants.push_back(j);
+            }
+        }
+
+        if (invariants.empty()) continue;
+
+        // Step 3: hoist
+        size_t insertPos = i;
+
+        std::vector<IRInstruction> hoisted;
+        for (auto idx : invariants)
+            hoisted.push_back(ir[idx]);
+
+        // Remove from loop (reverse order)
+        for (auto it = invariants.rbegin(); it != invariants.rend(); ++it) {
+            ir.erase(ir.begin() + *it);
+            changed = true;
+        }
+
+        // Insert before loop
+        ir.insert(ir.begin() + insertPos, hoisted.begin(), hoisted.end());
+
+        // Move index forward
+        i = loopEnd;
+    }
+
+    return changed;
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 void optimizeIR(int level) {
@@ -141,6 +305,8 @@ void optimizeIR(int level) {
         // One round of all three passes
         constantFolding();
         copyPropagation();
+        commonSubexpressionElimination();
+        loopInvariantCodeMotion(); 
         deadCodeElimination();
         printf("  Passes run             : folding, propagation, dead-code (1 round)\n");
 
@@ -152,7 +318,9 @@ void optimizeIR(int level) {
             ++rounds;
             bool f = constantFolding();
             bool p = copyPropagation();
-            changed = f || p;
+            bool c = commonSubexpressionElimination();
+            bool l = loopInvariantCodeMotion();
+            changed = f || p || c || l;
         }
         deadCodeElimination();
         printf("  Passes run             : folding+propagation (%d rounds) + dead-code\n", rounds);

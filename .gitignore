@@ -14,3 +14,6 @@ prog.c
 *.exe
 # Temp / misc
 *.out
+test_*.c
+test_*
+simple_for*
