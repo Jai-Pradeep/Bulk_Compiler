@@ -28,6 +28,7 @@ int main(int argc, char* argv[]) {
     std::string outName  = "output";   // base name — .ir or executable
     int         optLevel = 0;
     bool        emitC    = false;
+    bool        useCUDA  = false;
 
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "-o") == 0 && i+1 < argc) {
@@ -46,6 +47,9 @@ int main(int argc, char* argv[]) {
             emitC = true;
         } else if (strcmp(argv[i], "--ir-only") == 0) {
             emitC = false;
+        } else if (strcmp(argv[i], "--cuda") == 0) {
+            useCUDA = true;
+            emitC = true;  // CUDA requires C generation
         } else if (strcmp(argv[i], "-h") == 0 ||
                    strcmp(argv[i], "--help") == 0) {
             printUsage(argv[0]);
@@ -83,7 +87,7 @@ int main(int argc, char* argv[]) {
     // Optionally generate C and compile
     if (emitC) {
         printf("\n=== Code Generation ===\n");
-        generateCode(cFile, exeName);
+        generateCode(cFile, exeName, useCUDA);
     }
 
     return 0;

@@ -40,6 +40,15 @@ static bool isParallelComment(const std::string& s) {
         // && s.find("no loop-carried") != std::string::npos;
 }
 
+static bool isLargeLoop(const std::string& bound) {
+    if (!isLiteral(bound)) return false;
+    try {
+        return std::stoi(bound) > 10000;
+    } catch (...) {
+        return false;
+    }
+}
+
 static std::unordered_map<std::string, IRType>
 collectTemps(size_t start, size_t end) {
     std::unordered_map<std::string, IRType> temps;
@@ -87,6 +96,53 @@ struct ParallelLoop {
     std::string bound;          // N as string
     std::string Lstart, Lend;
 };
+
+// ── CUDA Kernel Emission ──────────────────────────────────────────────────────
+static void emitCUDAKernel(const ParallelLoop& pl,
+                           const std::string& cuFile,
+                           const std::string& exeName) {
+    // For now, emit a simple CUDA kernel stub
+    // This is a template — real version would extract arrays from IR
+    std::ofstream cu(cuFile);
+    if (!cu) { std::cerr << "Error: cannot open " << cuFile << "\n"; return; }
+
+    cu << "// Generated CUDA kernel by BulkCompiler\n";
+    cu << "#include <stdio.h>\n\n";
+
+    cu << "__global__ void bulkKernel(int *a, int *b, int *c, int N) {\n";
+    cu << "    int i = blockIdx.x * blockDim.x + threadIdx.x;\n";
+    cu << "    if (i < N) {\n";
+    cu << "        c[i] = a[i] + b[i];\n";
+    cu << "    }\n";
+    cu << "}\n\n";
+
+    cu << "int main() {\n";
+    cu << "    int N = " << pl.bound << ";\n";
+    cu << "    int *d_a, *d_b, *d_c;\n";
+    cu << "    cudaMalloc(&d_a, N * sizeof(int));\n";
+    cu << "    cudaMalloc(&d_b, N * sizeof(int));\n";
+    cu << "    cudaMalloc(&d_c, N * sizeof(int));\n\n";
+    cu << "    int threads = 256;\n";
+    cu << "    int blocks = (N + threads - 1) / threads;\n";
+    cu << "    bulkKernel<<<blocks, threads>>>(d_a, d_b, d_c, N);\n\n";
+    cu << "    cudaFree(d_a);\n";
+    cu << "    cudaFree(d_b);\n";
+    cu << "    cudaFree(d_c);\n";
+    cu << "    return 0;\n";
+    cu << "}\n";
+    cu.close();
+
+    std::cout << "[Codegen] CUDA kernel written to: " << cuFile << "\n";
+
+    std::string cmd = "nvcc " + cuFile + " -o " + exeName + " 2>&1";
+    std::cout << "[Codegen] Compiling CUDA: " << cmd << "\n";
+    int ret = system(cmd.c_str());
+    if (ret == 0)
+        std::cout << "[Codegen] Success! Run with: ./" << exeName << "\n";
+    else
+        std::cerr << "[Codegen] nvcc failed — ensure CUDA toolkit is installed\n";
+}
+
 
 static ParallelLoop detectParallelLoop(size_t commentPos) {
     ParallelLoop pl;
@@ -175,7 +231,10 @@ static std::string emitC(const IRInstruction& ins, const std::string& indent) {
 // ── Emit a range of IR as C, handling parallel loops ─────────────────────────
 static void emitRange(std::ofstream& out,
                       size_t start, size_t end,
-                      const std::string& indent)
+                      const std::string& indent,
+                      bool useCUDA = false,
+                      const std::string& exeName = "",
+                      const std::string& cuFile = "")
 {
     std::vector<std::string> pendingArgs;
 
@@ -187,18 +246,31 @@ static void emitRange(std::ofstream& out,
         if (ins.op == "comment" && isParallelComment(ins.arg1)) {
             ParallelLoop pl = detectParallelLoop(i);
             if (pl.found) {
-                // Emit as proper C for loop with OpenMP pragma
-                out << "\n";
-                out << indent << "// auto-parallelised by BulkCompiler\n";
-                out << indent << "#pragma omp parallel for schedule(static)\n";
-                out << indent << "for (int " << pl.idxVar << " = 0; "
-                    << pl.idxVar << " < " << pl.bound << "; "
-                    << "++" << pl.idxVar << ") {\n";
+                // Debug output
+                std::cerr << "[DEBUG] Parallel loop detected: idxVar=" << pl.idxVar 
+                          << ", bound=" << pl.bound << ", useCUDA=" << useCUDA 
+                          << ", isLarge=" << isLargeLoop(pl.bound) << "\n";
+                
+                // Choose backend: CUDA for large loops, OpenMP for others
+                if (useCUDA && isLargeLoop(pl.bound)) {
+                    // Emit CUDA kernel
+                    std::cerr << "[DEBUG] Emitting CUDA kernel...\n";
+                    emitCUDAKernel(pl, cuFile, exeName);
+                    out << indent << "// CUDA kernel generated and compiled\n";
+                } else {
+                    // Emit as proper C for loop with OpenMP pragma
+                    out << "\n";
+                    out << indent << "// auto-parallelised by BulkCompiler\n";
+                    out << indent << "#pragma omp parallel for schedule(static)\n";
+                    out << indent << "for (int " << pl.idxVar << " = 0; "
+                        << pl.idxVar << " < " << pl.bound << "; "
+                        << "++" << pl.idxVar << ") {\n";
 
-                // Emit body
-                emitRange(out, pl.bodyStart, pl.bodyEnd, indent + "    ");
+                    // Emit body
+                    emitRange(out, pl.bodyStart, pl.bodyEnd, indent + "    ", useCUDA, exeName, cuFile);
 
-                out << indent << "}\n";
+                    out << indent << "}\n";
+                }
 
                 // Skip past the whole loop pattern
                 i = pl.lendIdx + 1;
@@ -238,7 +310,10 @@ static void emitRange(std::ofstream& out,
 }
 
 // ── Main entry point ──────────────────────────────────────────────────────────
-void generateCode(const std::string& cFile, const std::string& exeName) {
+void generateCode(const std::string& cFile, const std::string& exeName, bool useCUDA) {
+
+    // Setup filenames for CUDA if needed
+    std::string cuFile = exeName + ".cu";
 
     // Pass 1: find function boundaries
     struct FuncRange { size_t begin, end; std::string name; IRType ret; };
@@ -307,7 +382,7 @@ void generateCode(const std::string& cFile, const std::string& exeName) {
         for (auto& [name, type] : temps)
             out << "    " << cType(type) << " " << name << " = 0;\n";
         if (!temps.empty()) out << "\n";
-        emitRange(out, bodyStart, fr.end, "    ");
+        emitRange(out, bodyStart, fr.end, "    ", useCUDA, exeName, cuFile);
         out << "}\n\n";
     }
 
@@ -379,7 +454,7 @@ void generateCode(const std::string& cFile, const std::string& exeName) {
         for (auto& [name, type] : temps)
             final << "    " << cType(type) << " " << name << " = 0;\n";
         if (!temps.empty()) final << "\n";
-        emitRange(final, bodyStart, fr.end, "    ");
+        emitRange(final, bodyStart, fr.end, "    ", useCUDA, exeName, cuFile);
         final << "}\n\n";
     }
 
@@ -409,13 +484,21 @@ void generateCode(const std::string& cFile, const std::string& exeName) {
             if (pl.found) {
                 final << "\n";
                 final << "    // auto-parallelised by BulkCompiler\n";
-                final << "    #pragma omp parallel for schedule(static)\n";
-                final << "    for (int " << pl.idxVar << " = 0; "
-                      << pl.idxVar << " < " << pl.bound << "; "
-                      << "++" << pl.idxVar << ") {\n";
-                // Body
-                emitRange(final, pl.bodyStart, pl.bodyEnd, "        ");
-                final << "    }\n";
+                
+                // Choose backend: CUDA for large loops, OpenMP for others
+                if (useCUDA && isLargeLoop(pl.bound)) {
+                    std::cerr << "[DEBUG] Emitting CUDA kernel in main loop...\n";
+                    emitCUDAKernel(pl, cuFile, exeName);
+                    final << "    // CUDA kernel generated and compiled\n";
+                } else {
+                    final << "    #pragma omp parallel for schedule(static)\n";
+                    final << "    for (int " << pl.idxVar << " = 0; "
+                          << pl.idxVar << " < " << pl.bound << "; "
+                          << "++" << pl.idxVar << ") {\n";
+                    // Body
+                    emitRange(final, pl.bodyStart, pl.bodyEnd, "        ", useCUDA, exeName, cuFile);
+                    final << "    }\n";
+                }
                 // Skip all global indices up through lendIdx
                 while (gi < globalIdxs.size() && globalIdxs[gi] <= pl.lendIdx) ++gi;
                 continue;
@@ -449,6 +532,12 @@ void generateCode(const std::string& cFile, const std::string& exeName) {
     final.close();
 
     std::cout << "[Codegen] C file written to: " << cFile << "\n";
+
+    if (useCUDA) {
+        std::cout << "[Codegen] CUDA mode enabled. CUDA kernels compiled separately.\n";
+        std::cout << "[Codegen] If CUDA kernels exist, link with: nvcc " << cuFile 
+                  << " -o " << exeName << "\n";
+    }
 
     std::string cmd = "gcc -O2 -fopenmp " + cFile + " -o " + exeName + " 2>&1";
     std::cout << "[Codegen] Compiling: " << cmd << "\n";
