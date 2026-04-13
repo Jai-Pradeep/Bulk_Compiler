@@ -6,10 +6,14 @@ compiler
 parser.tab.cpp
 parser.tab.h
 lex.yy.cpp
-
+parser.tab.hpp
+prog.c
 # IR / output files
 *.ir
 *.asm
 *.exe
 # Temp / misc
 *.out
+test_*.c
+test_*
+simple_for*
