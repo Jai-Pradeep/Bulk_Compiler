@@ -697,3 +697,61 @@ std::string ContinueNode::generateIR() {
     ir.emplace_back("goto", loopStack.back().Lstep, "", "", IRType::VOID);
     return "";
 }
+
+ArraySizeNode::ArraySizeNode(std::string n) : name(n) {}
+
+void ArraySizeNode::print(int indent) {
+    indentPrint(indent);
+    std::cout << "@ " << name << "\n";
+}
+
+std::string ArraySizeNode::generateIR() {
+    if (!symtab.exists(name)) {
+        std::cerr << "Error: " << name << " not declared\n";
+        exit(1);
+    }
+
+    auto sym = symtab.get(name);
+
+    if (!sym.isArray) {
+        std::cerr << "Error: " << name << " is not an array\n";
+        exit(1);
+    }
+
+    int total = 1;
+    for (int d : sym.dimensions)
+        total *= d;
+
+    std::string t = newTemp();
+    ir.emplace_back("=", std::to_string(total), "", t, IRType::INT32);
+
+    return t;
+}
+
+ArrayDimNode::ArrayDimNode(std::string n) : name(n) {}
+
+void ArrayDimNode::print(int indent) {
+    indentPrint(indent);
+    std::cout << "@@ " << name << "\n";
+}
+
+std::string ArrayDimNode::generateIR() {
+    if (!symtab.exists(name)) {
+        std::cerr << "Error: " << name << " not declared\n";
+        exit(1);
+    }
+
+    auto sym = symtab.get(name);
+
+    if (!sym.isArray) {
+        std::cerr << "Error: " << name << " is not an array\n";
+        exit(1);
+    }
+
+    int dims = sym.dimensions.size();
+
+    std::string t = newTemp();
+    ir.emplace_back("=", std::to_string(dims), "", t, IRType::INT32);
+
+    return t;
+}

@@ -264,3 +264,19 @@ struct ContinueNode : ASTNode {
     void print(int indent) override;
     std::string generateIR() override;
 };
+
+// ── NEW: @arr → total size ───────────────────────────────
+struct ArraySizeNode : ASTNode {
+    std::string name;
+    ArraySizeNode(std::string n);
+    void print(int indent) override;
+    std::string generateIR() override;
+};
+
+// ── NEW: @@arr → number of dimensions ────────────────────
+struct ArrayDimNode : ASTNode {
+    std::string name;
+    ArrayDimNode(std::string n);
+    void print(int indent) override;
+    std::string generateIR() override;
+};

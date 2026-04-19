@@ -31,6 +31,9 @@
 "break"         { return BREAK; }
 "continue"      { return CONTINUE; }
 
+"@@"    { return ATAT; }
+"@"     { return AT; }
+
 [0-9]+          { yylval.num = atoi(yytext); return NUMBER; }
 
 [a-zA-Z_][a-zA-Z0-9_]* {

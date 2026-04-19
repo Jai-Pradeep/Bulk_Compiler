@@ -44,6 +44,7 @@ int yylex();
 %token ASSIGN LT GT LE GE EQ NEQ
 %token SEMICOLON COMMA LBRACE RBRACE
 %token LPAREN RPAREN LBRACKET RBRACKET
+%token AT ATAT
 
 /* Precedence — low to high                          */
 /* Logical OR  is lowest                             */
@@ -444,6 +445,8 @@ expression:
         }
     | ID                              { $$ = new IdentifierNode($1); }
     | NUMBER                          { $$ = new NumberNode($1); }
+    | AT ID                           { $$ = new ArraySizeNode(std::string($2)); }
+    | ATAT ID                         { $$ = new ArrayDimNode(std::string($2)); }
     ;
 
 %%
