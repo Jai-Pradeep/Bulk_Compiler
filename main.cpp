@@ -67,7 +67,10 @@ int main(int argc, char* argv[]) {
 
     // Parse
     printf("=== Parsing ===\n");
-    yyparse();
+    if (yyparse() != 0) {
+        printf("Parsing failed!\n");
+        return 1;
+    }
     printf("=== Parsing complete ===\n\n");
 
     symtab.print();

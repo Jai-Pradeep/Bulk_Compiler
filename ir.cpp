@@ -13,6 +13,10 @@ std::string irTypeName(IRType t) {
         case IRType::INT32:  return "i32";
         case IRType::INT64:  return "i64";
         case IRType::INT128: return "i128";
+        case IRType::FLOAT:  return "f64";
+        case IRType::CHAR:   return "char";
+        case IRType::BOOL:   return "bool";
+        case IRType::VOID:   return "void";
         default:             return "?";
     }
 }
@@ -21,6 +25,10 @@ IRType parseType(const std::string& s) {
     if (s == "int32" || s == "int") return IRType::INT32;
     if (s == "int64")               return IRType::INT64;
     if (s == "int128")              return IRType::INT128;
+    if (s == "float")               return IRType::FLOAT;
+    if (s == "char")                return IRType::CHAR;
+    if (s == "bool")                return IRType::BOOL;
+    if (s == "void")                return IRType::VOID;
     throw std::runtime_error("Unknown type keyword: " + s);
 }
 
@@ -207,6 +215,24 @@ static std::string fmtInstr(const IRInstruction& i) {
         if (i.type != IRType::UNKNOWN) s += "  [" + irTypeName(i.type) + "]";
         return s;
     }
+
+    if (i.op == "print") {
+        std::string s = "    print " + i.arg1;
+        if (i.type != IRType::UNKNOWN) s += "  [" + irTypeName(i.type) + "]";
+        return s;
+    }
+
+    if (i.op == "scan") {
+        std::string s = "    scan " + i.arg1;
+        if (i.type != IRType::UNKNOWN) s += "  [" + irTypeName(i.type) + "]";
+        return s;
+    }
+
+    if (i.op == "break")
+        return "    break";
+
+    if (i.op == "continue")
+        return "    continue";
 
     auto typeTag = [](IRType t) -> std::string {
         return (t != IRType::UNKNOWN) ? ("  [" + irTypeName(t) + "]") : "";

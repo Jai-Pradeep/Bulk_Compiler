@@ -19,6 +19,27 @@ struct NumberNode : ASTNode {
     std::string generateIR() override;
 };
 
+struct FloatNode : ASTNode {
+    double value;
+    FloatNode(double v);
+    void print(int indent) override;
+    std::string generateIR() override;
+};
+
+struct CharNode : ASTNode {
+    char value;
+    CharNode(char v);
+    void print(int indent) override;
+    std::string generateIR() override;
+};
+
+struct BoolNode : ASTNode {
+    bool value;
+    BoolNode(bool v);
+    void print(int indent) override;
+    std::string generateIR() override;
+};
+
 struct IdentifierNode : ASTNode {
     std::string name;
     IdentifierNode(std::string n);
@@ -28,8 +49,8 @@ struct IdentifierNode : ASTNode {
 
 struct ArrayAccessNode : ASTNode {
     std::string name;
-    ASTNode*    index;
-    ArrayAccessNode(std::string n, ASTNode* i);
+    std::vector<ASTNode*> indices;
+    ArrayAccessNode(std::string n, std::vector<ASTNode*> i);
     void print(int indent) override;
     std::string generateIR() override;
 };
@@ -39,6 +60,14 @@ struct BinaryOpNode : ASTNode {
     ASTNode*    left;
     ASTNode*    right;
     BinaryOpNode(std::string o, ASTNode* l, ASTNode* r);
+    void print(int indent) override;
+    std::string generateIR() override;
+};
+
+struct UnaryOpNode : ASTNode {
+    std::string op;
+    ASTNode*    expr;
+    UnaryOpNode(std::string o, ASTNode* e);
     void print(int indent) override;
     std::string generateIR() override;
 };
@@ -53,9 +82,9 @@ struct AssignmentNode : ASTNode {
 
 struct ArrayElementAssignmentNode : ASTNode {
     std::string name;
-    ASTNode*    index;
+    std::vector<ASTNode*> indices;
     ASTNode*    expr;
-    ArrayElementAssignmentNode(std::string n, ASTNode* i, ASTNode* e);
+    ArrayElementAssignmentNode(std::string n, std::vector<ASTNode*> i, ASTNode* e);
     void print(int indent) override;
     std::string generateIR() override;
 };
@@ -204,6 +233,50 @@ struct ReturnNode : ASTNode {
     ASTNode* expr;   // nullptr for void return
 
     ReturnNode(ASTNode* e);
+    void print(int indent) override;
+    std::string generateIR() override;
+};
+
+// ── NEW: I/O nodes ────────────────────────────────────────────────────────────
+struct ScanNode : ASTNode {
+    std::string varName;
+    ScanNode(std::string n);
+    void print(int indent) override;
+    std::string generateIR() override;
+};
+
+struct PrintNode : ASTNode {
+    ASTNode* expr;
+    PrintNode(ASTNode* e);
+    void print(int indent) override;
+    std::string generateIR() override;
+};
+
+// ── NEW: Control flow nodes ───────────────────────────────────────────────────
+struct BreakNode : ASTNode {
+    BreakNode();
+    void print(int indent) override;
+    std::string generateIR() override;
+};
+
+struct ContinueNode : ASTNode {
+    ContinueNode();
+    void print(int indent) override;
+    std::string generateIR() override;
+};
+
+// ── NEW: @arr → total size ───────────────────────────────
+struct ArraySizeNode : ASTNode {
+    std::string name;
+    ArraySizeNode(std::string n);
+    void print(int indent) override;
+    std::string generateIR() override;
+};
+
+// ── NEW: @@arr → number of dimensions ────────────────────
+struct ArrayDimNode : ASTNode {
+    std::string name;
+    ArrayDimNode(std::string n);
     void print(int indent) override;
     std::string generateIR() override;
 };

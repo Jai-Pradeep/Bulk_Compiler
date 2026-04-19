@@ -3,13 +3,34 @@
 #include "symtab.h"
 #include "depcheck.h"
 #include <iostream>
+struct LoopContext {
+    std::string Lstart;
+    std::string Lend;
+    std::string Lstep;
+};
 
+static std::vector<LoopContext> loopStack;
 static void indentPrint(int n) { for (int i = 0; i < n; i++) std::cout << "  "; }
 
 // ─── NumberNode ───────────────────────────────────────────────────────────────
 NumberNode::NumberNode(int v) : value(v) { irType = IRType::INT32; }
 void NumberNode::print(int indent) { indentPrint(indent); std::cout << "Number " << value << "\n"; }
 std::string NumberNode::generateIR() { irType = IRType::INT32; return std::to_string(value); }
+
+// ─── FloatNode ────────────────────────────────────────────────────────────────
+FloatNode::FloatNode(double v) : value(v) { irType = IRType::FLOAT; }
+void FloatNode::print(int indent) { indentPrint(indent); std::cout << "Float " << value << "\n"; }
+std::string FloatNode::generateIR() { irType = IRType::FLOAT; return std::to_string(value); }
+
+// ─── CharNode ─────────────────────────────────────────────────────────────────
+CharNode::CharNode(char v) : value(v) { irType = IRType::CHAR; }
+void CharNode::print(int indent) { indentPrint(indent); std::cout << "Char '" << value << "'\n"; }
+std::string CharNode::generateIR() { irType = IRType::CHAR; return std::string(1, value); }
+
+// ─── BoolNode ─────────────────────────────────────────────────────────────────
+BoolNode::BoolNode(bool v) : value(v) { irType = IRType::BOOL; }
+void BoolNode::print(int indent) { indentPrint(indent); std::cout << "Bool " << (value ? "true" : "false") << "\n"; }
+std::string BoolNode::generateIR() { irType = IRType::BOOL; return value ? "1" : "0"; }
 
 // ─── IdentifierNode ───────────────────────────────────────────────────────────
 IdentifierNode::IdentifierNode(std::string n) : name(n) {}
@@ -20,14 +41,18 @@ std::string IdentifierNode::generateIR() {
 }
 
 // ─── ArrayAccessNode ──────────────────────────────────────────────────────────
-ArrayAccessNode::ArrayAccessNode(std::string n, ASTNode* i) : name(n), index(i) {}
+ArrayAccessNode::ArrayAccessNode(std::string n, std::vector<ASTNode*> i) : name(n), indices(i) {}
 void ArrayAccessNode::print(int indent) {
     indentPrint(indent); std::cout << "ArrayAccess " << name << "\n";
-    index->print(indent + 1);
+    for (auto* idx : indices) idx->print(indent + 1);
 }
 std::string ArrayAccessNode::generateIR() {
     if (symtab.exists(name)) irType = symtab.get(name).irType;
-    return name + "[" + index->generateIR() + "]";
+    std::string res = name;
+    for (auto* idx : indices) {
+        res += "[" + idx->generateIR() + "]";
+    }
+    return res;
 }
 
 // ─── BinaryOpNode ─────────────────────────────────────────────────────────────
@@ -46,6 +71,25 @@ std::string BinaryOpNode::generateIR() {
     std::string t = newTemp();
     ir.emplace_back(op, lv, rv, t, resT);
     irType = resT;
+    return t;
+}
+
+// ─── UnaryOpNode ──────────────────────────────────────────────────────────────
+UnaryOpNode::UnaryOpNode(std::string o, ASTNode* e) : op(o), expr(e) {}
+void UnaryOpNode::print(int indent) {
+    indentPrint(indent); std::cout << "UnaryOp " << op << "\n";
+    expr->print(indent+1);
+}
+std::string UnaryOpNode::generateIR() {
+    std::string ev = expr->generateIR();
+    IRType eT = expr->irType;
+    std::string t = newTemp();
+    if (op == "~" || op == "-" || op == "!") {
+    ir.emplace_back(op, "", ev, t, eT);  // operator is prefix
+} else {
+    ir.emplace_back(op, ev, "", t, eT);
+}
+    irType = eT;
     return t;
 }
 
@@ -87,12 +131,12 @@ std::string AssignmentNode::generateIR() {
     IdentifierNode*  rightId   = dynamic_cast<IdentifierNode*> (bin->right);
     NumberNode*      rightNum  = dynamic_cast<NumberNode*>     (bin->right);
     ArrayAccessNode* rightElem = dynamic_cast<ArrayAccessNode*>(bin->right);
-    int n = lhs.size;
+    int n = lhs.dimensions.empty() ? 0 : lhs.dimensions[0];
 
     if (leftId && rightId) {
         Symbol a = symtab.get(leftId->name), b = symtab.get(rightId->name);
         if (!a.isArray || !b.isArray) { std::cerr << "Error: operands must be arrays\n"; exit(1); }
-        if (a.size != b.size || a.size != n) { std::cerr << "Error: size mismatch\n"; exit(1); }
+        if (a.dimensions[0] != b.dimensions[0] || a.dimensions[0] != n) { std::cerr << "Error: size mismatch\n"; exit(1); }
         IRType resT = dominantType(a.irType, b.irType);
 
         std::string iVar, Lstart, Lend;
@@ -109,7 +153,7 @@ std::string AssignmentNode::generateIR() {
     }
     if (leftId && rightNum) {
         Symbol a = symtab.get(leftId->name);
-        if (!a.isArray || a.size != n) { std::cerr << "Error: array mismatch\n"; exit(1); }
+        if (!a.isArray || a.dimensions[0] != n) { std::cerr << "Error: array mismatch\n"; exit(1); }
         IRType resT = dominantType(a.irType, IRType::INT32);
 
         std::string iVar, Lstart, Lend;
@@ -125,14 +169,14 @@ std::string AssignmentNode::generateIR() {
     }
     if (leftId && rightElem) {
         Symbol a = symtab.get(leftId->name), es = symtab.get(rightElem->name);
-        if (!a.isArray || a.size != n) { std::cerr << "Error: array mismatch\n"; exit(1); }
+        if (!a.isArray || a.dimensions[0] != n) { std::cerr << "Error: array mismatch\n"; exit(1); }
         IRType resT = dominantType(a.irType, es.irType);
 
         std::string iVar, Lstart, Lend;
         emitParallelLoopHeader(n, iVar, Lstart, Lend);
 
         // rightElem index needs the loop var substituted
-        std::string elem = rightElem->name + "[" + rightElem->index->generateIR() + "]";
+        std::string elem = rightElem->name + "[" + rightElem->indices[0]->generateIR() + "]";
         std::string lv   = emitCastIfNeeded(leftId->name+"["+iVar+"]", a.irType,  resT);
         elem             = emitCastIfNeeded(elem,                       es.irType, resT);
         std::string t    = newTemp();
@@ -146,20 +190,27 @@ std::string AssignmentNode::generateIR() {
 }
 
 // ─── ArrayElementAssignmentNode ───────────────────────────────────────────────
-ArrayElementAssignmentNode::ArrayElementAssignmentNode(std::string n, ASTNode* i, ASTNode* e)
-    : name(n), index(i), expr(e) {}
+ArrayElementAssignmentNode::ArrayElementAssignmentNode(std::string n, std::vector<ASTNode*> i, ASTNode* e)
+    : name(n), indices(i), expr(e) {}
 void ArrayElementAssignmentNode::print(int indent) {
     indentPrint(indent); std::cout << "ArrayElementAssign " << name << "[]\n";
-    index->print(indent+1); expr->print(indent+1);
+    for (auto* idx : indices) idx->print(indent+1);
+    expr->print(indent+1);
 }
 std::string ArrayElementAssignmentNode::generateIR() {
-    std::string idx = index->generateIR();
     std::string val = expr->generateIR();
     Symbol lhs = symtab.get(name);
     val = emitCastIfNeeded(val, expr->irType, lhs.irType);
-    ir.emplace_back("=", val, "", name+"["+idx+"]", lhs.irType);
+    
+    // Build subscript string with all indices: mat[i][j][k]...
+    std::string subscript = name;
+    for (auto* idx : indices) {
+        subscript += "[" + idx->generateIR() + "]";
+    }
+    
+    ir.emplace_back("=", val, "", subscript, lhs.irType);
     irType = lhs.irType;
-    return name+"["+idx+"]";
+    return subscript;
 }
 
 // ─── ComparisonNode ───────────────────────────────────────────────────────────
@@ -261,7 +312,12 @@ std::string ForNode::generateIR() {
 
     // ── Emit actual loop IR ───────────────────────────────────────────────────
     std::string Lstart = newLabel();
+    std::string Lstep  = newLabel();
     std::string Lend   = newLabel();
+
+    std::cout << "DEBUG: entering loop\n";
+    
+    loopStack.push_back({Lstart, Lend, Lstep});
 
     // 1. Init
     if (init) init->generateIR();
@@ -278,6 +334,8 @@ std::string ForNode::generateIR() {
     // 5. Body
     if (body) body->generateIR();
 
+    emitLabel(Lstep);
+
     // 6. Step
     if (step) step->generateIR();
 
@@ -286,6 +344,8 @@ std::string ForNode::generateIR() {
 
     // 8. Exit label
     emitLabel(Lend);
+    loopStack.pop_back();
+    std::cout << "DEBUG: exiting loop\n";
 
     return "";
 }
@@ -440,6 +500,8 @@ void FunctionDefNode::print(int indent) {
 }
 
 std::string FunctionDefNode::generateIR() {
+    std::cout << "DEBUG: Function " << name
+              << " param count = " << params.size() << "\n";
     IRType retType = parseType(returnTypeName);
     irType = retType;
 
@@ -461,7 +523,7 @@ std::string FunctionDefNode::generateIR() {
 
     // Declare each parameter as a local variable in this scope
     for (auto& p : params) {
-        symtab.insert(p.name, p.typeName, false, 0);
+        symtab.insert(p.name, p.typeName, std::vector<int>{});
         emitParam(p.name, parseType(p.typeName));
     }
 
@@ -485,11 +547,15 @@ void FunctionCallNode::print(int indent) {
 }
 
 std::string FunctionCallNode::generateIR() {
+    std::cout << "DEBUG: Calling " << name
+              << " with " << args.size() << " args\n";
     if (!symtab.funcExists(name)) {
         std::cerr << "Error: call to undefined function '" << name << "'\n";
         exit(1);
     }
     FuncSignature sig = symtab.getFunc(name);
+    std::cout << "DEBUG: Signature of " << name
+          << " expects " << sig.paramTypes.size() << " params\n";
 
     if (args.size() != sig.paramTypes.size()) {
         std::cerr << "Error: function '" << name << "' expects "
@@ -572,4 +638,120 @@ std::string IfNode::generateIR() {
 
     emitLabel(Ldone);
     return "";
+}
+
+// ─── ScanNode ─────────────────────────────────────────────────────────────────
+ScanNode::ScanNode(std::string n) : varName(n) {}
+void ScanNode::print(int indent) {
+    indentPrint(indent); std::cout << "Scan " << varName << "\n";
+}
+std::string ScanNode::generateIR() {
+    ir.emplace_back("scan", varName, "", "", symtab.get(varName).irType);
+    irType = IRType::VOID;
+    return "";
+}
+
+// ─── PrintNode ────────────────────────────────────────────────────────────────
+PrintNode::PrintNode(ASTNode* e) : expr(e) {}
+void PrintNode::print(int indent) {
+    indentPrint(indent); std::cout << "Print\n";
+    if (expr) expr->print(indent + 1);
+}
+std::string PrintNode::generateIR() {
+    std::string val = expr->generateIR();
+    ir.emplace_back("print", val, "", "", expr->irType);
+    irType = IRType::VOID;
+    return "";
+}
+
+// ─── BreakNode ────────────────────────────────────────────────────────────────
+BreakNode::BreakNode() {}
+void BreakNode::print(int indent) {
+    indentPrint(indent); std::cout << "Break\n";
+}
+std::string BreakNode::generateIR() {
+    std::cout << "DEBUG: break, loop depth = " << loopStack.size() << "\n";
+
+    if (loopStack.empty()) {
+        std::cerr << "Error: 'break' outside loop\n";
+        exit(1);
+    }
+
+    ir.emplace_back("goto", loopStack.back().Lend, "", "", IRType::VOID);
+    return "";
+}
+
+// ─── ContinueNode ──────────────────────────────────────────────────────────────
+ContinueNode::ContinueNode() {}
+void ContinueNode::print(int indent) {
+    indentPrint(indent); std::cout << "Continue\n";
+}
+std::string ContinueNode::generateIR() {
+    std::cout << "DEBUG: continue, loop depth = " << loopStack.size() << "\n";
+
+    if (loopStack.empty()) {
+        std::cerr << "Error: 'continue' outside loop\n";
+        exit(1);
+    }
+
+    ir.emplace_back("goto", loopStack.back().Lstep, "", "", IRType::VOID);
+    return "";
+}
+
+ArraySizeNode::ArraySizeNode(std::string n) : name(n) {}
+
+void ArraySizeNode::print(int indent) {
+    indentPrint(indent);
+    std::cout << "@ " << name << "\n";
+}
+
+std::string ArraySizeNode::generateIR() {
+    if (!symtab.exists(name)) {
+        std::cerr << "Error: " << name << " not declared\n";
+        exit(1);
+    }
+
+    auto sym = symtab.get(name);
+
+    if (!sym.isArray) {
+        std::cerr << "Error: " << name << " is not an array\n";
+        exit(1);
+    }
+
+    int total = 1;
+    for (int d : sym.dimensions)
+        total *= d;
+
+    std::string t = newTemp();
+    ir.emplace_back("=", std::to_string(total), "", t, IRType::INT32);
+
+    return t;
+}
+
+ArrayDimNode::ArrayDimNode(std::string n) : name(n) {}
+
+void ArrayDimNode::print(int indent) {
+    indentPrint(indent);
+    std::cout << "@@ " << name << "\n";
+}
+
+std::string ArrayDimNode::generateIR() {
+    if (!symtab.exists(name)) {
+        std::cerr << "Error: " << name << " not declared\n";
+        exit(1);
+    }
+
+    auto sym = symtab.get(name);
+
+    if (!sym.isArray) {
+        std::cerr << "Error: " << name << " is not an array\n";
+        exit(1);
+    }
+
+    int dims = sym.dimensions.size();
+
+    std::string t = newTemp();
+    ir.emplace_back("=", std::to_string(dims), "", t, IRType::INT32);
+
+    return t;
 }
