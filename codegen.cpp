@@ -8,6 +8,7 @@
 #include <vector>
 #include <set>
 #include <unordered_map>
+#include <algorithm>
 #include <cstdlib>
 
 // ── C type mapping ────────────────────────────────────────────────────────────
@@ -72,8 +73,6 @@ struct ParallelLoop {
     bool found=false;
     size_t commentIdx,initIdx,lstartIdx,boundIdx,ifzeroIdx,bodyStart,bodyEnd,gotoIdx,lendIdx;
     std::string idxVar,bound,Lstart,Lend,Lstep;
-    // Lstep: the label that sits just before the step instruction (L2 in the example)
-    // We must skip it when emitting the parallel for body.
 };
 
 static ParallelLoop detectParallelLoop(size_t pos) {
@@ -91,29 +90,18 @@ static ParallelLoop detectParallelLoop(size_t pos) {
     pl.ifzeroIdx=i; pl.Lend=ir[i].arg2; ++i;
     pl.bodyStart=i;
 
-    // Scan forward to find the step: tN = idxVar + 1
     while(i<ir.size()){
         if(ir[i].op=="+"&&ir[i].arg1==pl.idxVar&&ir[i].arg2=="1") break;
         ++i;
     }
     if(i>=ir.size()) return pl;
 
-    // ── NEW: bodyEnd points to the last real body instruction BEFORE the
-    //         step label.  If the instruction just before `i` is a label,
-    //         that label is the step-label (L2).  Record it so we can skip
-    //         it when emitting the parallel body.
-    pl.bodyEnd=i;   // exclusive end of body (step starts here)
-
-    // Walk backward over any trailing labels to find Lstep
+    pl.bodyEnd=i;
     size_t j=i;
     while(j>pl.bodyStart && ir[j-1].op=="label") --j;
-    // Everything from j..i-1 are labels that belong to the step region, not the body.
-    // The real body ends at j (exclusive).
     pl.bodyEnd=j;
-    // Record all step-region label names so emitRange can skip them.
-    // In practice there is exactly one (L2), but handle multiple safely.
     for(size_t k=j;k<i;++k){
-        if(ir[k].op=="label") pl.Lstep=ir[k].arg1; // last one wins; usually just one
+        if(ir[k].op=="label") pl.Lstep=ir[k].arg1;
     }
 
     std::string tStep=ir[i].result; ++i;
@@ -123,6 +111,277 @@ static ParallelLoop detectParallelLoop(size_t pos) {
     pl.gotoIdx=i; ++i;
     if(i>=ir.size()||ir[i].op!="label"||ir[i].arg1!=pl.Lend) return pl;
     pl.lendIdx=i; pl.found=true; return pl;
+}
+
+// Forward declaration — emitC is defined after emitCUDAKernel but called from it.
+static std::string emitC(const IRInstruction& ins, const std::string& ind);
+
+// ── CUDA kernel emission ──────────────────────────────────────────────────────
+//
+// Analyses the body of the detected parallel loop to figure out which
+// arrays are read-only (inputs) and which are written (outputs), then
+// emits a complete, self-contained .cu file: kernel + host scaffolding.
+//
+// Strategy for IR-driven body emission:
+//   • Any array indexed by idxVar and assigned          → output array
+//   • Any array indexed by idxVar that is only read     → input array
+//   • Scalar temporaries are declared as local vars inside the kernel.
+//
+// For the common case of a simple element-wise loop the emitted kernel
+// is directly correct.  More complex bodies fall back to a line-by-line
+// transcription of the IR with the same emitC() helper used by the C path.
+//
+static void emitCUDAKernel(const ParallelLoop& pl,
+                           const std::string& cuFile,
+                           const std::string& exeName)
+{
+    // ── 1. Scan the body to discover arrays used ──────────────────────────
+    //
+    // We look for IR patterns like:
+    //   t_idx  = arr + idxVar          (array base + index → address)
+    //   result = *t_idx                (load)
+    //   *t_idx = value                 (store — represented as "store" op or "=")
+    //
+    // In practice BulkCompiler typically emits array accesses as:
+    //   t1 = arr[i]   →  t1 = *(arr + i)   (load from array+offset)
+    //   arr[i] = v    →  *(arr + i) = v     (store)
+    //
+    // We collect unique array names and classify them.
+
+    struct ArrayInfo {
+        std::string name;
+        IRType      type = IRType::INT32;
+        bool        written = false;   // true → output
+        bool        read    = false;   // true → input (or both)
+    };
+    std::unordered_map<std::string, ArrayInfo> arrays;
+
+    // Helper: record an array use
+    auto markArray = [&](const std::string& name, IRType t, bool write) {
+        auto& a = arrays[name];
+        a.name = name;
+        if(t != IRType::UNKNOWN) a.type = t;
+        if(write) a.written = true;
+        else      a.read    = true;
+    };
+
+    for(size_t i=pl.bodyStart; i<pl.bodyEnd && i<ir.size(); ++i){
+        auto& ins = ir[i];
+        // Array element load:  result = arr + idxVar  then deref
+        if((ins.op=="+"||ins.op=="add") && ins.arg2==pl.idxVar)
+            markArray(ins.arg1, ins.type, false);
+        // Array element store: result written via temp that holds arr+idx
+        if(ins.op=="store" || (ins.op=="=" && !ins.arg2.empty()))
+            markArray(ins.result, ins.type, true);
+        // Direct array[i] = ...  style (result contains array name)
+        if(ins.op=="=" && symtab.exists(ins.result)){
+            const auto sym = symtab.get(ins.result);
+            if(sym.isArray) markArray(ins.result, sym.irType, true);
+        }
+        if(ins.op=="=" && symtab.exists(ins.arg1)){
+            const auto sym = symtab.get(ins.arg1);
+            if(sym.isArray) markArray(ins.arg1, sym.irType, false);
+        }
+    }
+
+    // If discovery found nothing (simple scalar body), fall back to
+    // a generic three-array (a, b, c) template with a note.
+    bool genericFallback = arrays.empty();
+
+    // ── 2. Separate inputs from outputs ──────────────────────────────────
+    std::vector<ArrayInfo*> inputs, outputs;
+    for(auto& [n, a] : arrays){
+        if(a.written) outputs.push_back(&a);
+        else          inputs.push_back(&a);
+    }
+    // An array that is both read and written counts as an in-out → output list.
+    // Remove from inputs if also in outputs.
+    std::set<std::string> outNames;
+    for(auto* a : outputs) outNames.insert(a->name);
+    inputs.erase(std::remove_if(inputs.begin(), inputs.end(),
+                                [&](ArrayInfo* a){ return outNames.count(a->name); }),
+                 inputs.end());
+
+    // ── 3. Write the .cu file ─────────────────────────────────────────────
+    std::ofstream cu(cuFile);
+    if(!cu){ std::cerr<<"Error: cannot open "<<cuFile<<"\n"; return; }
+
+    cu << "// Generated CUDA kernel by BulkCompiler\n";
+    cu << "// Loop bound: " << pl.bound << "\n";
+    cu << "#include <stdio.h>\n";
+    cu << "#include <stdlib.h>\n";
+    cu << "#include <cuda_runtime.h>\n\n";
+
+    // ── 3a. Build kernel parameter list ──────────────────────────────────
+    // Pattern:  (T* in0, T* in1, ..., T* out0, ..., int N)
+    auto arrayC = [](IRType t) -> std::string {
+        switch(t){
+            case IRType::INT64:  return "long long";
+            case IRType::FLOAT:  return "float";
+            case IRType::CHAR:   return "char";
+            default:             return "int";
+        }
+    };
+
+    std::string kernelParams;
+    std::vector<std::string> allArrayNames;   // ordered: inputs then outputs
+
+    if(genericFallback){
+        // Generic three-array fallback
+        kernelParams = "int *a, int *b, int *c, int N";
+        allArrayNames = {"a","b","c"};
+    } else {
+        bool first = true;
+        for(auto* a : inputs){
+            if(!first) kernelParams += ", ";
+            kernelParams += arrayC(a->type) + "* " + a->name;
+            allArrayNames.push_back(a->name);
+            first = false;
+        }
+        for(auto* a : outputs){
+            if(!first) kernelParams += ", ";
+            kernelParams += arrayC(a->type) + "* " + a->name;
+            allArrayNames.push_back(a->name);
+            first = false;
+        }
+        kernelParams += ", int N";
+    }
+
+    // ── 3b. Kernel function ───────────────────────────────────────────────
+    cu << "__global__ void bulkKernel(" << kernelParams << ") {\n";
+    cu << "    int " << pl.idxVar << " = blockIdx.x * blockDim.x + threadIdx.x;\n";
+    cu << "    if (" << pl.idxVar << " < N) {\n";
+
+    if(genericFallback){
+        // Generic element-wise add as placeholder; mark clearly
+        cu << "        // TODO: replace with actual loop body\n";
+        cu << "        c[" << pl.idxVar << "] = a[" << pl.idxVar
+           << "] + b[" << pl.idxVar << "];\n";
+    } else {
+        // Emit body instructions using the same emitC helper.
+        // We suppress loop-control labels/gotos (they're now handled by CUDA).
+        std::set<std::string> skipLbls;
+        skipLbls.insert(pl.Lstart); skipLbls.insert(pl.Lend);
+        if(!pl.Lstep.empty()) skipLbls.insert(pl.Lstep);
+
+        for(size_t i=pl.bodyStart; i<pl.bodyEnd && i<ir.size(); ++i){
+            auto& ins = ir[i];
+            if(ins.op=="label" && skipLbls.count(ins.arg1)) continue;
+            if(ins.op=="goto"  && skipLbls.count(ins.arg1)) continue;
+            if(ins.op=="ifzero_goto" && skipLbls.count(ins.arg2)) continue;
+            if(ins.op=="func_begin"||ins.op=="func_end"||ins.op=="param") continue;
+            // push_arg / call inside a kernel body — emit inline
+            std::string line = emitC(ins, "        ");
+            if(!line.empty()) cu << line << "\n";
+        }
+    }
+
+    cu << "    }\n}\n\n";
+
+    // ── 3c. Host main() ───────────────────────────────────────────────────
+    cu << "int main() {\n";
+    cu << "    const int N = " << pl.bound << ";\n\n";
+
+    // Host allocations
+    if(genericFallback){
+        cu << "    int *a = (int*)malloc(N * sizeof(int));\n";
+        cu << "    int *b = (int*)malloc(N * sizeof(int));\n";
+        cu << "    int *c = (int*)malloc(N * sizeof(int));\n\n";
+        cu << "    for (int i = 0; i < N; i++) { a[i] = i; b[i] = i * 2; }\n\n";
+    } else {
+        for(auto* a : inputs){
+            cu << "    " << arrayC(a->type) << " *" << a->name
+               << " = (" << arrayC(a->type) << "*)malloc(N * sizeof("
+               << arrayC(a->type) << "));\n";
+        }
+        for(auto* a : outputs){
+            cu << "    " << arrayC(a->type) << " *" << a->name
+               << " = (" << arrayC(a->type) << "*)malloc(N * sizeof("
+               << arrayC(a->type) << "));\n";
+        }
+        cu << "\n";
+        // Simple initialisation for inputs
+        if(!inputs.empty()){
+            cu << "    for (int i = 0; i < N; i++) {\n";
+            int seed = 1;
+            for(auto* a : inputs)
+                cu << "        " << a->name << "[i] = i * " << seed++ << ";\n";
+            cu << "    }\n\n";
+        }
+    }
+
+    // Device allocations
+    for(auto& n : allArrayNames)
+        cu << "    " << arrayC(arrays.count(n)?arrays[n].type:IRType::INT32)
+           << " *d_" << n << ";\n";
+    cu << "\n";
+    for(auto& n : allArrayNames)
+        cu << "    cudaMalloc(&d_" << n << ", N * sizeof("
+           << arrayC(arrays.count(n)?arrays[n].type:IRType::INT32) << "));\n";
+    cu << "\n";
+
+    // Copy inputs to device
+    for(auto* a : inputs)
+        cu << "    cudaMemcpy(d_" << a->name << ", " << a->name
+           << ", N * sizeof(" << arrayC(a->type) << "), cudaMemcpyHostToDevice);\n";
+    if(genericFallback){
+        cu << "    cudaMemcpy(d_a, a, N * sizeof(int), cudaMemcpyHostToDevice);\n";
+        cu << "    cudaMemcpy(d_b, b, N * sizeof(int), cudaMemcpyHostToDevice);\n";
+    }
+    cu << "\n";
+
+    // Kernel launch
+    cu << "    int threads = 256;\n";
+    cu << "    int blocks  = (N + threads - 1) / threads;\n";
+    cu << "    bulkKernel<<<blocks, threads>>>(";
+    bool firstArg = true;
+    for(auto& n : allArrayNames){
+        if(!firstArg) cu << ", ";
+        cu << "d_" << n;
+        firstArg = false;
+    }
+    cu << ", N);\n";
+    cu << "    cudaDeviceSynchronize();\n\n";
+
+    // Copy outputs back
+    for(auto* a : outputs)
+        cu << "    cudaMemcpy(" << a->name << ", d_" << a->name
+           << ", N * sizeof(" << arrayC(a->type) << "), cudaMemcpyDeviceToHost);\n";
+    if(genericFallback)
+        cu << "    cudaMemcpy(c, d_c, N * sizeof(int), cudaMemcpyDeviceToHost);\n";
+    cu << "\n";
+
+    // Sample output
+    if(genericFallback)
+        cu << "    printf(\"c[10] = %d\\n\", c[10]);\n\n";
+    else if(!outputs.empty())
+        cu << "    printf(\"" << outputs[0]->name << "[10] = "
+           << (outputs[0]->type==IRType::FLOAT?"%f":"%d") << "\\n\", "
+           << outputs[0]->name << "[10]);\n\n";
+
+    // Cleanup
+    for(auto& n : allArrayNames)
+        cu << "    cudaFree(d_" << n << ");\n";
+    if(genericFallback){
+        cu << "    free(a); free(b); free(c);\n";
+    } else {
+        for(auto* a : inputs)  cu << "    free(" << a->name << ");\n";
+        for(auto* a : outputs) cu << "    free(" << a->name << ");\n";
+    }
+
+    cu << "    return 0;\n}\n";
+    cu.close();
+
+    std::cout << "[Codegen] CUDA kernel written to: " << cuFile << "\n";
+
+    // Attempt compilation with nvcc
+    std::string cmd = "nvcc " + cuFile + " -o " + exeName + " 2>&1";
+    std::cout << "[Codegen] Compiling CUDA: " << cmd << "\n";
+    int ret = system(cmd.c_str());
+    if(ret == 0)
+        std::cout << "[Codegen] Success! Run with: ./" << exeName << "\n";
+    else
+        std::cerr << "[Codegen] nvcc failed — ensure CUDA toolkit is installed\n";
 }
 
 // ── Emit one IR instruction as C ─────────────────────────────────────────────
@@ -169,9 +428,6 @@ static std::string emitC(const IRInstruction& ins, const std::string& ind) {
 }
 
 // ── Emit a range of IR as C ───────────────────────────────────────────────────
-// skipLabels: a set of label NAMES that should be suppressed (used when
-//             emitting a parallel-for body so that loop-control labels like
-//             L1, L2, L3 are not emitted as C goto-labels inside the body).
 static void emitRange(std::ostream& out, size_t start, size_t end,
                       const std::string& ind,
                       bool useCUDA=false,
@@ -183,20 +439,27 @@ static void emitRange(std::ostream& out, size_t start, size_t end,
     for(size_t i=start; i<end&&i<ir.size(); ++i){
         auto& ins=ir[i];
 
-        // ── Detect a nested parallel loop comment and recurse ──────────────
         if(ins.op=="comment"&&isParallelComment(ins.arg1)){
             ParallelLoop pl=detectParallelLoop(i);
             if(pl.found){
-                if(useCUDA&&isLargeLoop(pl.bound)){
-                    out<<ind<<"// CUDA kernel would run here for loop bound="<<pl.bound<<"\n";
+                std::cerr << "[DEBUG] Parallel loop detected: idxVar=" << pl.idxVar
+                          << ", bound=" << pl.bound
+                          << ", useCUDA=" << useCUDA
+                          << ", isLarge=" << isLargeLoop(pl.bound) << "\n";
+
+                if(useCUDA && isLargeLoop(pl.bound)){
+                    // Emit CUDA kernel and note in the C file
+                    emitCUDAKernel(pl, cuFile, exeName);
+                    out << ind << "// CUDA kernel emitted for loop bound=" << pl.bound << "\n";
+                    out << ind << "// See: " << cuFile << "\n";
                 } else {
-                    // Build the set of labels to suppress inside this nested loop
                     std::set<std::string> innerSkip;
                     innerSkip.insert(pl.Lstart);
                     innerSkip.insert(pl.Lend);
                     if(!pl.Lstep.empty()) innerSkip.insert(pl.Lstep);
 
-                    out<<"\n"<<ind<<"#pragma omp parallel for schedule(static)\n";
+                    out<<"\n"<<ind<<"// auto-parallelised by BulkCompiler\n";
+                    out<<ind<<"#pragma omp parallel for schedule(static)\n";
                     out<<ind<<"for(int "<<pl.idxVar<<"=0; "
                        <<pl.idxVar<<"<"<<pl.bound<<"; ++"<<pl.idxVar<<") {\n";
                     emitRange(out, pl.bodyStart, pl.bodyEnd,
@@ -219,12 +482,9 @@ static void emitRange(std::ostream& out, size_t start, size_t end,
             continue;
         }
 
-        // ── Skip loop-control labels/gotos that are inside skipLabels ─────
         if(!skipLabels.empty()){
             if(ins.op=="label" && skipLabels.count(ins.arg1)) continue;
             if(ins.op=="goto"  && skipLabels.count(ins.arg1)) continue;
-            // ifzero_goto to the Lend label is the loop condition check —
-            // it must not appear inside the parallel body either.
             if(ins.op=="ifzero_goto" && skipLabels.count(ins.arg2)) continue;
         }
 
@@ -306,7 +566,6 @@ void generateCode(const std::string& cFile, const std::string& exeName, bool use
     // main()
     out<<"int main(int argc, char* argv[]) {\n";
 
-    // Declare global-scope temps (excluding function temps)
     auto allTemps=collectTemps(0,ir.size());
     for(auto& fr:funcs){
         auto ft=collectTemps(fr.begin,fr.end+1);
@@ -325,10 +584,16 @@ void generateCode(const std::string& cFile, const std::string& exeName, bool use
         if(ins.op=="comment"&&isParallelComment(ins.arg1)){
             ParallelLoop pl=detectParallelLoop(i);
             if(pl.found){
-                if(useCUDA&&isLargeLoop(pl.bound)){
-                    out<<"    // CUDA kernel for loop bound="<<pl.bound<<"\n";
+                std::cerr << "[DEBUG] Parallel loop detected (global): idxVar=" << pl.idxVar
+                          << ", bound=" << pl.bound
+                          << ", useCUDA=" << useCUDA
+                          << ", isLarge=" << isLargeLoop(pl.bound) << "\n";
+
+                if(useCUDA && isLargeLoop(pl.bound)){
+                    emitCUDAKernel(pl, cuFile, exeName);
+                    out << "    // CUDA kernel emitted for loop bound=" << pl.bound << "\n";
+                    out << "    // See: " << cuFile << "\n";
                 } else {
-                    // Labels to suppress inside the parallel body
                     std::set<std::string> skipLabels;
                     skipLabels.insert(pl.Lstart);
                     skipLabels.insert(pl.Lend);
@@ -365,8 +630,14 @@ void generateCode(const std::string& cFile, const std::string& exeName, bool use
     out.close();
 
     std::cout<<"[Codegen] C file written to: "<<cFile<<"\n";
+
+    if(useCUDA){
+        std::cout<<"[Codegen] CUDA mode active. Large loops (>10000) emit .cu kernels.\n";
+        std::cout<<"[Codegen] Link CUDA binary with: nvcc "<<cuFile<<" -o "<<exeName<<"\n";
+    }
+
     std::string cmd="gcc -O2 -fopenmp "+cFile+" -o "+exeName+" 2>&1";
-    std::cout<<"[Codegen] Compiling: "<<cmd<<"\n";
+    std::cout<<"[Codegen] Compiling C: "<<cmd<<"\n";
     int ret=system(cmd.c_str());
     if(ret==0) std::cout<<"[Codegen] Success! Run with: ./"<<exeName<<"\n";
     else std::cerr<<"[Codegen] gcc failed — see errors above\n";

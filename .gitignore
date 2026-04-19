@@ -19,3 +19,4 @@ test_*
 simple_for*
 *.txt
 bubble*
+/logs/
