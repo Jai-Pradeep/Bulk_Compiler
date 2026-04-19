@@ -81,9 +81,9 @@ type_kw:
       INT32   { $$ = (char*)"int32";  }
     | INT64   { $$ = (char*)"int64";  }
     | INT128  { $$ = (char*)"int128"; }
-    | FLOAT   { $$ = (char*)"float";  }   
-    | CHAR    { $$ = (char*)"char";   }  
-    | BOOL    { $$ = (char*)"bool";   }   
+    | FLOAT   { $$ = (char*)"float";  }
+    | CHAR    { $$ = (char*)"char";   }
+    | BOOL    { $$ = (char*)"bool";   }
     ;
 
 ret_type_kw:
@@ -97,23 +97,25 @@ body:
       /* empty */ { $$ = new StatementListNode(); }
     | body body_stmt {
             $$ = $1;
-            $$->add($2);
+            if ($2) $$->add($2);
         }
     ;
 
 block:
-      body_stmt { $$ = new StatementListNode(); $$->add($1); }
-    | LBRACE body RBRACE { $$ = $2; }
+      body_stmt            { $$ = new StatementListNode(); if ($1) $$->add($1); }
+    | LBRACE body RBRACE   { $$ = $2; }
     ;
 
-/* ── body_stmt: statement inside a loop/if — NO generateIR() call ───────── */
-/*    The owning node (ForNode, WhileNode, IfNode) calls generateIR() later   */
+/* ── body_stmt ───────────────────────────────────────────────────────────── */
+/*  Statements INSIDE a loop/if/function body.                               */
+/*  generateIR() is NOT called here — the owning node's generateIR() will    */
+/*  walk the StatementListNode and emit IR for each child in order.           */
 body_stmt:
       declaration      { $$ = $1; }
     | body_assignment  { $$ = $1; }
-    | for_stmt         { $$ = $1; }
-    | while_stmt       { $$ = $1; }
-    | if_stmt          { $$ = $1; }
+    | for_stmt         { $$ = $1; }   /* ForNode  — IR emitted by owner  */
+    | while_stmt       { $$ = $1; }   /* WhileNode — IR emitted by owner */
+    | if_stmt          { $$ = $1; }   /* IfNode   — IR emitted by owner  */
     | func_call_stmt   { $$ = $1; }
     | return_stmt      { $$ = $1; }
     | scan_stmt        { $$ = $1; }
@@ -149,14 +151,27 @@ body_assignment:
                 exit(1);
             }
         }
-;
+    ;
 
+/* ── statement: top-level statement — generateIR() IS called here ────────── */
 statement:
       declaration      { $$ = $1; }
     | assignment       { $$ = $1; }
-    | for_stmt         { $$ = $1; }
-    | while_stmt       { $$ = $1; }
-    | if_stmt          { $$ = $1; }
+    | for_stmt
+        {
+            $$ = $1;
+            if (emitIR && $1) $1->generateIR();   /* ← FOR at top level  */
+        }
+    | while_stmt
+        {
+            $$ = $1;
+            if (emitIR && $1) $1->generateIR();   /* ← WHILE at top level */
+        }
+    | if_stmt
+        {
+            $$ = $1;
+            if (emitIR && $1) $1->generateIR();   /* ← IF at top level   */
+        }
     | func_def         { $$ = $1; }
     | func_call_stmt   { $$ = $1; }
     | return_stmt      { $$ = $1; }
@@ -211,17 +226,16 @@ assignment:
         }
     | expression LBRACKET expression RBRACKET ASSIGN expression SEMICOLON
         {
-            // Multi-dimensional array assignment: arr[i][j] = val
+            /* Multi-dimensional array assignment: arr[i][j] = val */
             ArrayAccessNode* arr = dynamic_cast<ArrayAccessNode*>($1);
             if (!arr) {
                 printf("Error: invalid lvalue for assignment\n");
                 exit(1);
             }
-            // arr->name is the base array, arr->indices has the first index
             std::vector<ASTNode*> allIndices = arr->indices;
             allIndices.push_back($3);
             ArrayElementAssignmentNode* a = new ArrayElementAssignmentNode(arr->name, allIndices, $6);
-            delete arr;  // since we took ownership
+            delete arr;
             if (emitIR) a->generateIR();
             $$ = a;
         }
@@ -269,7 +283,7 @@ func_def:
             currentFuncRetType = std::string($<id>2);
             currentFuncName    = std::string($<id>3);
             currentFuncParams  = $<paramlist>5;
-            // Register function early for recursive calls
+            /* Register function early for recursive calls */
             FuncSignature sig;
             sig.returnType = parseType(currentFuncRetType);
             for (auto& p : *currentFuncParams) {
@@ -277,19 +291,25 @@ func_def:
                 sig.paramNames.push_back(p.name);
             }
             symtab.insertFunc(currentFuncName, sig);
-            // NOTE: Do NOT enter scope here — let FunctionDefNode::generateIR() handle scope management
+            /*
+             * Suppress IR emission for all nodes built while parsing the
+             * function body.  FunctionDefNode::generateIR() will walk the
+             * StatementListNode and call generateIR() on every child in the
+             * correct order, inside the correct scope.
+             */
             emitIR = false;
         }
       LBRACE body RBRACE
         {
             emitIR = true;
-            // NOTE: Do NOT leave scope here — let FunctionDefNode::generateIR() handle it
             FunctionDefNode* f = new FunctionDefNode(
                 currentFuncRetType, currentFuncName, *currentFuncParams, $<stmtlist>9);
             delete currentFuncParams;
             currentFuncParams = nullptr;
-            // f->print(0);
-            if (emitIR) f->generateIR();
+            /* Now safe to emit: FunctionDefNode::generateIR() manages scope
+               and calls generateIR() on each body statement, including any
+               ForNode / WhileNode / IfNode children. */
+            f->generateIR();
             $$ = f;
         }
     ;
@@ -341,15 +361,26 @@ break_stmt:
       BREAK SEMICOLON
         {
             $$ = new BreakNode();
+            /* generateIR() for break is called by the owning loop node */
         }
     ;
 
 continue_stmt:
       CONTINUE SEMICOLON
         {
-            $$ = new ContinueNode(); 
+            $$ = new ContinueNode();
+            /* generateIR() for continue is called by the owning loop node */
         }
     ;
+
+/* ── for loop ────────────────────────────────────────────────────────────── */
+/*                                                                            */
+/*   for (id = init; cond; id = step) block                                  */
+/*                                                                            */
+/*   NOTE: generateIR() is NOT called here.                                   */
+/*   - If for_stmt appears at top level  → called in the `statement:` rule.  */
+/*   - If for_stmt appears inside a body → called by the owning node's        */
+/*     generateIR() when it walks its StatementListNode.                      */
 
 for_stmt:
       FOR LPAREN
@@ -366,44 +397,33 @@ for_stmt:
             AssignmentNode*    stepNode = new AssignmentNode(std::string($<id>9),  $<node>11);
             StatementListNode* bodyNode = $<stmtlist>13;
 
-            ForNode* f = new ForNode(initNode, condNode, stepNode, bodyNode);
-            // f->print(0);
-            $$ = f;
+            $$ = new ForNode(initNode, condNode, stepNode, bodyNode);
         }
     ;
 
 /* ── while loop ──────────────────────────────────────────────────────────── */
-/*   while (cond) { body }                                                    */
+/*   while (cond) block                                                       */
 /*                                                                            */
-/*   IR layout:                                                               */
-/*   Lstart:                                                                  */
-/*     <cond>                                                                 */
-/*     if cond == 0 goto Lend                                                 */
-/*     <body>                                                                 */
-/*     goto Lstart                                                            */
-/*   Lend:                                                                    */
+/*   NOTE: generateIR() is NOT called here (same reason as for_stmt).        */
 
 while_stmt:
       WHILE LPAREN expression RPAREN block
         {
-            WhileNode* w = new WhileNode($3, $5);
-            // w->print(0);
-            $$ = w;
+            $$ = new WhileNode($3, $5);
         }
     ;
+
+/* ── if / if-else ────────────────────────────────────────────────────────── */
+/*   NOTE: generateIR() is NOT called here (same reason as for_stmt).        */
 
 if_stmt:
       IF LPAREN expression RPAREN block
         {
-            IfNode* n = new IfNode($3, $5, nullptr);
-            // n->print(0);
-            $$ = n;
+            $$ = new IfNode($3, $5, nullptr);
         }
     | IF LPAREN expression RPAREN block ELSE block
         {
-            IfNode* n = new IfNode($3, $5, $7);
-            // n->print(0);
-            $$ = n;
+            $$ = new IfNode($3, $5, $7);
         }
     ;
 

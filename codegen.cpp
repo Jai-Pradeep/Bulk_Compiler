@@ -1,5 +1,3 @@
-
-
 #include "codegen.h"
 #include "ir.h"
 #include "symtab.h"
@@ -73,7 +71,9 @@ static std::unordered_map<std::string,IRType> collectTemps(size_t start, size_t 
 struct ParallelLoop {
     bool found=false;
     size_t commentIdx,initIdx,lstartIdx,boundIdx,ifzeroIdx,bodyStart,bodyEnd,gotoIdx,lendIdx;
-    std::string idxVar,bound,Lstart,Lend;
+    std::string idxVar,bound,Lstart,Lend,Lstep;
+    // Lstep: the label that sits just before the step instruction (L2 in the example)
+    // We must skip it when emitting the parallel for body.
 };
 
 static ParallelLoop detectParallelLoop(size_t pos) {
@@ -90,12 +90,33 @@ static ParallelLoop detectParallelLoop(size_t pos) {
     if(i>=ir.size()||ir[i].op!="ifzero_goto"||ir[i].arg1!=tBound) return pl;
     pl.ifzeroIdx=i; pl.Lend=ir[i].arg2; ++i;
     pl.bodyStart=i;
+
+    // Scan forward to find the step: tN = idxVar + 1
     while(i<ir.size()){
         if(ir[i].op=="+"&&ir[i].arg1==pl.idxVar&&ir[i].arg2=="1") break;
         ++i;
     }
     if(i>=ir.size()) return pl;
-    pl.bodyEnd=i; std::string tStep=ir[i].result; ++i;
+
+    // ── NEW: bodyEnd points to the last real body instruction BEFORE the
+    //         step label.  If the instruction just before `i` is a label,
+    //         that label is the step-label (L2).  Record it so we can skip
+    //         it when emitting the parallel body.
+    pl.bodyEnd=i;   // exclusive end of body (step starts here)
+
+    // Walk backward over any trailing labels to find Lstep
+    size_t j=i;
+    while(j>pl.bodyStart && ir[j-1].op=="label") --j;
+    // Everything from j..i-1 are labels that belong to the step region, not the body.
+    // The real body ends at j (exclusive).
+    pl.bodyEnd=j;
+    // Record all step-region label names so emitRange can skip them.
+    // In practice there is exactly one (L2), but handle multiple safely.
+    for(size_t k=j;k<i;++k){
+        if(ir[k].op=="label") pl.Lstep=ir[k].arg1; // last one wins; usually just one
+    }
+
+    std::string tStep=ir[i].result; ++i;
     if(i>=ir.size()||ir[i].op!="="||ir[i].arg1!=tStep) return pl;
     ++i;
     if(i>=ir.size()||ir[i].op!="goto"||ir[i].arg1!=pl.Lstart) return pl;
@@ -119,9 +140,6 @@ static std::string emitC(const IRInstruction& ins, const std::string& ind) {
         IRType t=symtab.exists(ins.arg1)?symtab.get(ins.arg1).irType:IRType::INT32;
         return ind+"scanf(\""+scanFmt(t)+"\", &"+ins.arg1+");";
     }
-    if(ins.op=="scan"){
-        return ind+"scanf(\""+scanFmt(ins.type)+"\", &"+ins.arg1+");";
-    }
     if(ins.op=="print"||ins.op=="println"){
         std::string nl=(ins.op=="println")?"\\n":"";
         return ind+"printf(\""+printFmt(ins.type)+nl+"\", "+ins.arg1+");";
@@ -139,46 +157,59 @@ static std::string emitC(const IRInstruction& ins, const std::string& ind) {
     if(ins.op=="deref")    return ind+ins.result+" = *(int*)(intptr_t)"+ins.arg1+";";
     if(ins.op=="field_read") return ind+ins.result+" = "+ins.arg1+"."+ins.arg2+";";
     if(ins.op=="cast"){
-        std::string fromStr=ins.arg2; // "i32->i64" etc.
         return ind+ins.result+" = ("+cType(ins.type)+")"+ins.arg1+";";
     }
-    // if(ins.op=="break")    return ind+"break;";
-    // if(ins.op=="continue") return ind+"continue;";
     if(ins.op=="="){
         if(ins.arg2.empty()) return ind+ins.result+" = "+ins.arg1+";";
         return ind+ins.result+" = "+ins.arg1+";";
     }
     if(ins.op=="neg") return ind+ins.result+" = -"+ins.arg2+";";
-    if(ins.op=="~") return ind+ins.result+" = ~"+ins.arg2+";";
-    // binary / comparison
+    if(ins.op=="~")   return ind+ins.result+" = ~"+ins.arg2+";";
     return ind+ins.result+" = "+ins.arg1+" "+ins.op+" "+ins.arg2+";";
 }
 
-// ── Emit a range of IR as C, handling parallel loops and calls ───────────────
+// ── Emit a range of IR as C ───────────────────────────────────────────────────
+// skipLabels: a set of label NAMES that should be suppressed (used when
+//             emitting a parallel-for body so that loop-control labels like
+//             L1, L2, L3 are not emitted as C goto-labels inside the body).
 static void emitRange(std::ostream& out, size_t start, size_t end,
-                      const std::string& ind, bool useCUDA=false,
-                      const std::string& exeName="", const std::string& cuFile="")
+                      const std::string& ind,
+                      bool useCUDA=false,
+                      const std::string& exeName="",
+                      const std::string& cuFile="",
+                      const std::set<std::string>& skipLabels={})
 {
     std::vector<std::string> pendingArgs;
     for(size_t i=start; i<end&&i<ir.size(); ++i){
         auto& ins=ir[i];
+
+        // ── Detect a nested parallel loop comment and recurse ──────────────
         if(ins.op=="comment"&&isParallelComment(ins.arg1)){
             ParallelLoop pl=detectParallelLoop(i);
             if(pl.found){
                 if(useCUDA&&isLargeLoop(pl.bound)){
                     out<<ind<<"// CUDA kernel would run here for loop bound="<<pl.bound<<"\n";
                 } else {
+                    // Build the set of labels to suppress inside this nested loop
+                    std::set<std::string> innerSkip;
+                    innerSkip.insert(pl.Lstart);
+                    innerSkip.insert(pl.Lend);
+                    if(!pl.Lstep.empty()) innerSkip.insert(pl.Lstep);
+
                     out<<"\n"<<ind<<"#pragma omp parallel for schedule(static)\n";
                     out<<ind<<"for(int "<<pl.idxVar<<"=0; "
-                        <<pl.idxVar<<"<"<<pl.bound<<"; ++"<<pl.idxVar<<") {\n";
-                    emitRange(out, pl.bodyStart, pl.bodyEnd, ind+"    ", useCUDA, exeName, cuFile);
+                       <<pl.idxVar<<"<"<<pl.bound<<"; ++"<<pl.idxVar<<") {\n";
+                    emitRange(out, pl.bodyStart, pl.bodyEnd,
+                              ind+"    ", useCUDA, exeName, cuFile, innerSkip);
                     out<<ind<<"}\n";
                 }
                 i=pl.lendIdx; continue;
             }
         }
+
         if(ins.op=="func_begin"||ins.op=="func_end"||ins.op=="param") continue;
         if(ins.op=="push_arg"){ pendingArgs.push_back(ins.arg1); continue; }
+
         if(ins.op=="call"){
             std::string al;
             for(size_t a=0;a<pendingArgs.size();++a){if(a) al+=", "; al+=pendingArgs[a];}
@@ -187,6 +218,16 @@ static void emitRange(std::ostream& out, size_t start, size_t end,
             else out<<ind<<ins.result<<" = "<<ins.arg1<<"("<<al<<");\n";
             continue;
         }
+
+        // ── Skip loop-control labels/gotos that are inside skipLabels ─────
+        if(!skipLabels.empty()){
+            if(ins.op=="label" && skipLabels.count(ins.arg1)) continue;
+            if(ins.op=="goto"  && skipLabels.count(ins.arg1)) continue;
+            // ifzero_goto to the Lend label is the loop condition check —
+            // it must not appear inside the parallel body either.
+            if(ins.op=="ifzero_goto" && skipLabels.count(ins.arg2)) continue;
+        }
+
         std::string line=emitC(ins,ind);
         if(!line.empty()) out<<line<<"\n";
     }
@@ -236,10 +277,8 @@ void generateCode(const std::string& cFile, const std::string& exeName, bool use
     // Global variable declarations
     for(auto& [name,sym]:symtab.globalSymbols()){
         if(sym.isArray){
-            // Emit: int mat[3][4] = {0};
             out<<cType(sym.irType)<<" "<<name;
-            for(auto dim : sym.dimensions)
-                out<<"["<<dim<<"]";
+            for(auto dim : sym.dimensions) out<<"["<<dim<<"]";
             out<<" = {0};\n";
         } else {
             out<<cType(sym.irType)<<" "<<name<<" = 0;\n";
@@ -282,23 +321,32 @@ void generateCode(const std::string& cFile, const std::string& exeName, bool use
     while(gi<globalIdxs.size()){
         size_t i=globalIdxs[gi];
         auto& ins=ir[i];
+
         if(ins.op=="comment"&&isParallelComment(ins.arg1)){
             ParallelLoop pl=detectParallelLoop(i);
             if(pl.found){
                 if(useCUDA&&isLargeLoop(pl.bound)){
                     out<<"    // CUDA kernel for loop bound="<<pl.bound<<"\n";
                 } else {
+                    // Labels to suppress inside the parallel body
+                    std::set<std::string> skipLabels;
+                    skipLabels.insert(pl.Lstart);
+                    skipLabels.insert(pl.Lend);
+                    if(!pl.Lstep.empty()) skipLabels.insert(pl.Lstep);
+
                     out<<"\n    // auto-parallelised by BulkCompiler\n";
                     out<<"    #pragma omp parallel for schedule(static)\n";
                     out<<"    for(int "<<pl.idxVar<<"=0; "
                        <<pl.idxVar<<"<"<<pl.bound<<"; ++"<<pl.idxVar<<") {\n";
-                    emitRange(out,pl.bodyStart,pl.bodyEnd,"        ",useCUDA,exeName,cuFile);
+                    emitRange(out, pl.bodyStart, pl.bodyEnd,
+                              "        ", useCUDA, exeName, cuFile, skipLabels);
                     out<<"    }\n";
                 }
                 while(gi<globalIdxs.size()&&globalIdxs[gi]<=pl.lendIdx) ++gi;
                 continue;
             }
         }
+
         if(ins.op=="func_begin"||ins.op=="func_end"||ins.op=="param"){++gi;continue;}
         if(ins.op=="push_arg"){pendingArgs.push_back(ins.arg1);++gi;continue;}
         if(ins.op=="call"){
@@ -317,7 +365,6 @@ void generateCode(const std::string& cFile, const std::string& exeName, bool use
     out.close();
 
     std::cout<<"[Codegen] C file written to: "<<cFile<<"\n";
-
     std::string cmd="gcc -O2 -fopenmp "+cFile+" -o "+exeName+" 2>&1";
     std::cout<<"[Codegen] Compiling: "<<cmd<<"\n";
     int ret=system(cmd.c_str());
@@ -330,10 +377,10 @@ void generateAssembly(const std::string& cFile, const std::string& outFile,
                       const std::string& arch)
 {
     std::string flag;
-    if(arch=="x86")     flag="-m32";
+    if(arch=="x86")       flag="-m32";
     else if(arch=="x86_64") flag="";
-    else if(arch=="arm")  flag="--target=arm-linux-gnueabi";
-    else if(arch=="riscv") flag="-march=rv64gc -mabi=lp64d";
+    else if(arch=="arm")    flag="--target=arm-linux-gnueabi";
+    else if(arch=="riscv")  flag="-march=rv64gc -mabi=lp64d";
 
     std::string cmd="gcc -S -O2 "+flag+" "+cFile+" -o "+outFile+" 2>&1";
     std::cout<<"[ASM] Generating "<<arch<<" assembly: "<<cmd<<"\n";
@@ -351,12 +398,10 @@ void generateCFG(const std::string& dotFile)
     out<<"digraph CFG {\n";
     out<<"  node [shape=box fontname=\"Courier\" fontsize=10];\n";
 
-    // Split IR into basic blocks
     struct Block { std::string id; std::vector<std::string> instrs; std::vector<std::string> succs; };
     std::vector<Block> blocks;
     std::unordered_map<std::string,int> labelToBlock;
 
-    // Determine leaders (first instr, targets of jumps, instr after jump)
     std::set<size_t> leaders;
     leaders.insert(0);
     for(size_t i=0;i<ir.size();++i){
@@ -366,7 +411,6 @@ void generateCFG(const std::string& dotFile)
         if(ir[i].op=="label") leaders.insert(i);
     }
 
-    // Build blocks
     int bn=0;
     for(auto it=leaders.begin();it!=leaders.end();++it){
         Block b;
@@ -384,9 +428,7 @@ void generateCFG(const std::string& dotFile)
         blocks.push_back(b);
     }
 
-    // Add edges
     for(size_t b=0;b<blocks.size();++b){
-        // find last real instruction
         auto& blk=blocks[b];
         auto it=std::next(leaders.begin(),b);
         auto nxt=std::next(it);
@@ -405,17 +447,15 @@ void generateCFG(const std::string& dotFile)
         }
     }
 
-    // Emit nodes
     for(auto& b:blocks){
         out<<"  "<<b.id<<" [label=\""<<b.id<<"\\n";
-        for(auto& ins:b.instrs) {
+        for(auto& ins:b.instrs){
             std::string esc=ins;
             for(char& c:esc) if(c=='"') c='\'';
             out<<esc<<"\\l";
         }
         out<<"\"];\n";
     }
-    // Emit edges
     for(auto& b:blocks)
         for(auto& s:b.succs)
             out<<"  "<<b.id<<" -> "<<s<<";\n";
@@ -423,12 +463,11 @@ void generateCFG(const std::string& dotFile)
     out<<"}\n";
     out.close();
     std::cout<<"[CFG] Dot file written to: "<<dotFile<<"\n";
-    // Try to render
     int r=system(("dot -Tpng "+dotFile+" -o "+dotFile+".png 2>/dev/null").c_str());
     if(r==0) std::cout<<"[CFG] PNG rendered to: "<<dotFile<<".png\n";
 }
 
-// ── AST dot file (pretty print) ───────────────────────────────────────────────
+// ── Optimization report ───────────────────────────────────────────────────────
 void generateOptReport(const std::string& outFile, size_t before, size_t after, int level)
 {
     std::ofstream out(outFile);

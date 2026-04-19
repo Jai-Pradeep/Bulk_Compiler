@@ -18,3 +18,4 @@ test_*.c
 test_*
 simple_for*
 *.txt
+bubble*
