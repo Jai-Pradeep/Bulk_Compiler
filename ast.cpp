@@ -78,7 +78,11 @@ std::string UnaryOpNode::generateIR() {
     std::string ev = expr->generateIR();
     IRType eT = expr->irType;
     std::string t = newTemp();
+    if (op == "~" || op == "-" || op == "!") {
+    ir.emplace_back(op, "", ev, t, eT);  // operator is prefix
+} else {
     ir.emplace_back(op, ev, "", t, eT);
+}
     irType = eT;
     return t;
 }

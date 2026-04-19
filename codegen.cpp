@@ -149,6 +149,7 @@ static std::string emitC(const IRInstruction& ins, const std::string& ind) {
         return ind+ins.result+" = "+ins.arg1+";";
     }
     if(ins.op=="neg") return ind+ins.result+" = -"+ins.arg2+";";
+    if(ins.op=="~") return ind+ins.result+" = ~"+ins.arg2+";";
     // binary / comparison
     return ind+ins.result+" = "+ins.arg1+" "+ins.op+" "+ins.arg2+";";
 }
