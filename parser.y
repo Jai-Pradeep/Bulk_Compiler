@@ -367,7 +367,6 @@ for_stmt:
 
             ForNode* f = new ForNode(initNode, condNode, stepNode, bodyNode);
             // f->print(0);
-            if (emitIR) f->generateIR();
             $$ = f;
         }
     ;
@@ -388,7 +387,6 @@ while_stmt:
         {
             WhileNode* w = new WhileNode($3, $5);
             // w->print(0);
-            if (emitIR) w->generateIR();
             $$ = w;
         }
     ;
@@ -398,14 +396,12 @@ if_stmt:
         {
             IfNode* n = new IfNode($3, $5, nullptr);
             // n->print(0);
-            if (emitIR) n->generateIR();
             $$ = n;
         }
     | IF LPAREN expression RPAREN block ELSE block
         {
             IfNode* n = new IfNode($3, $5, $7);
             // n->print(0);
-            if (emitIR) n->generateIR();
             $$ = n;
         }
     ;
