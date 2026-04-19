@@ -142,8 +142,8 @@ static std::string emitC(const IRInstruction& ins, const std::string& ind) {
         std::string fromStr=ins.arg2; // "i32->i64" etc.
         return ind+ins.result+" = ("+cType(ins.type)+")"+ins.arg1+";";
     }
-    if(ins.op=="break")    return ind+"break;";
-    if(ins.op=="continue") return ind+"continue;";
+    // if(ins.op=="break")    return ind+"break;";
+    // if(ins.op=="continue") return ind+"continue;";
     if(ins.op=="="){
         if(ins.arg2.empty()) return ind+ins.result+" = "+ins.arg1+";";
         return ind+ins.result+" = "+ins.arg1+";";

@@ -80,6 +80,9 @@ type_kw:
       INT32   { $$ = (char*)"int32";  }
     | INT64   { $$ = (char*)"int64";  }
     | INT128  { $$ = (char*)"int128"; }
+    | FLOAT   { $$ = (char*)"float";  }   
+    | CHAR    { $$ = (char*)"char";   }  
+    | BOOL    { $$ = (char*)"bool";   }   
     ;
 
 ret_type_kw:
@@ -158,8 +161,6 @@ statement:
     | return_stmt      { $$ = $1; }
     | scan_stmt        { $$ = $1; }
     | print_stmt       { $$ = $1; }
-    | break_stmt       { $$ = $1; }
-    | continue_stmt    { $$ = $1; }
     ;
 
 declaration:
@@ -338,18 +339,14 @@ print_stmt:
 break_stmt:
       BREAK SEMICOLON
         {
-            BreakNode* b = new BreakNode();
-            if (emitIR) b->generateIR();
-            $$ = b;
+            $$ = new BreakNode();
         }
     ;
 
 continue_stmt:
       CONTINUE SEMICOLON
         {
-            ContinueNode* c = new ContinueNode();
-            if (emitIR) c->generateIR();
-            $$ = c;
+            $$ = new ContinueNode(); 
         }
     ;
 

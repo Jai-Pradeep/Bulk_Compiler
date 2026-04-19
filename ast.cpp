@@ -3,7 +3,13 @@
 #include "symtab.h"
 #include "depcheck.h"
 #include <iostream>
+struct LoopContext {
+    std::string Lstart;
+    std::string Lend;
+    std::string Lstep;
+};
 
+static std::vector<LoopContext> loopStack;
 static void indentPrint(int n) { for (int i = 0; i < n; i++) std::cout << "  "; }
 
 // ─── NumberNode ───────────────────────────────────────────────────────────────
@@ -306,7 +312,12 @@ std::string ForNode::generateIR() {
 
     // ── Emit actual loop IR ───────────────────────────────────────────────────
     std::string Lstart = newLabel();
+    std::string Lstep  = newLabel();
     std::string Lend   = newLabel();
+
+    std::cout << "DEBUG: entering loop\n";
+    
+    loopStack.push_back({Lstart, Lend, Lstep});
 
     // 1. Init
     if (init) init->generateIR();
@@ -323,6 +334,8 @@ std::string ForNode::generateIR() {
     // 5. Body
     if (body) body->generateIR();
 
+    emitLabel(Lstep);
+
     // 6. Step
     if (step) step->generateIR();
 
@@ -331,6 +344,8 @@ std::string ForNode::generateIR() {
 
     // 8. Exit label
     emitLabel(Lend);
+    loopStack.pop_back();
+    std::cout << "DEBUG: exiting loop\n";
 
     return "";
 }
@@ -655,10 +670,14 @@ void BreakNode::print(int indent) {
     indentPrint(indent); std::cout << "Break\n";
 }
 std::string BreakNode::generateIR() {
-    // For simplicity, emit a goto to a break label (needs context)
-    // In loops, the loop node should handle labels
-    ir.emplace_back("break", "", "", "", IRType::VOID);
-    irType = IRType::VOID;
+    std::cout << "DEBUG: break, loop depth = " << loopStack.size() << "\n";
+
+    if (loopStack.empty()) {
+        std::cerr << "Error: 'break' outside loop\n";
+        exit(1);
+    }
+
+    ir.emplace_back("goto", loopStack.back().Lend, "", "", IRType::VOID);
     return "";
 }
 
@@ -668,7 +687,13 @@ void ContinueNode::print(int indent) {
     indentPrint(indent); std::cout << "Continue\n";
 }
 std::string ContinueNode::generateIR() {
-    ir.emplace_back("continue", "", "", "", IRType::VOID);
-    irType = IRType::VOID;
+    std::cout << "DEBUG: continue, loop depth = " << loopStack.size() << "\n";
+
+    if (loopStack.empty()) {
+        std::cerr << "Error: 'continue' outside loop\n";
+        exit(1);
+    }
+
+    ir.emplace_back("goto", loopStack.back().Lstep, "", "", IRType::VOID);
     return "";
 }
