@@ -6,9 +6,9 @@
 
 // ── One symbol ────────────────────────────────────────────────────────────────
 struct Symbol {
-    std::string type;       // "int32", "int64", "int128", "void"
+    std::string type;       // "int32", "float", etc.
     bool        isArray  = false;
-    int         size     = 0;
+    std::vector<int> dimensions;  // empty for scalars, {10} for 1D, {10,20} for 2D
     IRType      irType   = IRType::UNKNOWN;
 };
 
@@ -33,7 +33,7 @@ public:
     // ── Variable operations ───────────────────────────────────────────────────
     void   insert (const std::string& name,
                    const std::string& type,
-                   bool isArray, int size);
+                   const std::vector<int>& dimensions);
 
     bool   exists (const std::string& name) const;
     Symbol get    (const std::string& name) const;

@@ -69,7 +69,7 @@ void collectAccesses(ASTNode* node, const std::string& loopVar,
     {
         ArrayAccess w;
         w.array     = ae->name;
-        w.indexExpr = classifyIndex(ae->index, loopVar);
+        w.indexExpr = classifyIndex(ae->indices[0], loopVar);
         w.isWrite   = true;
         out.push_back(w);
         // Also walk the RHS for reads
@@ -87,7 +87,7 @@ void collectAccesses(ASTNode* node, const std::string& loopVar,
     if (ArrayAccessNode* ar = dynamic_cast<ArrayAccessNode*>(node)) {
         ArrayAccess r;
         r.array     = ar->name;
-        r.indexExpr = classifyIndex(ar->index, loopVar);
+        r.indexExpr = classifyIndex(ar->indices[0], loopVar);
         r.isWrite   = false;
         out.push_back(r);
         return;

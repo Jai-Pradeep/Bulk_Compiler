@@ -3,7 +3,7 @@
 #include <vector>
 
 // ── Types ─────────────────────────────────────────────────────────────────────
-enum class IRType { UNKNOWN, INT32, INT64, INT128, VOID };
+enum class IRType { UNKNOWN, INT32, INT64, INT128, FLOAT, CHAR, BOOL, VOID };
 
 std::string irTypeName(IRType t);
 IRType      parseType (const std::string& s);

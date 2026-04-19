@@ -6,7 +6,7 @@ SymbolTable symtab;
 
 void SymbolTable::insert(const std::string& name,
                          const std::string& type,
-                         bool isArray, int size)
+                         const std::vector<int>& dimensions)
 {
     auto& current = scopes.back();
     if (current.count(name)) {
@@ -14,10 +14,10 @@ void SymbolTable::insert(const std::string& name,
         exit(1);
     }
     Symbol s;
-    s.type    = type;
-    s.isArray = isArray;
-    s.size    = size;
-    s.irType  = parseType(type);
+    s.type       = type;
+    s.isArray    = !dimensions.empty();
+    s.dimensions = dimensions;
+    s.irType     = parseType(type);
     current[name] = s;
 }
 
@@ -50,8 +50,13 @@ int SymbolTable::depth() const { return (int)scopes.size() - 1; }
 
 void SymbolTable::insertFunc(const std::string& name, const FuncSignature& sig) {
     if (funcs.count(name)) {
-        std::cerr << "Error: redeclaration of function '" << name << "'\n";
-        exit(1);
+        // Instead of error, validate signature
+        if (funcs[name].paramTypes != sig.paramTypes ||
+            funcs[name].returnType != sig.returnType) {
+            std::cerr << "Error: conflicting declaration of function '" << name << "'\n";
+            exit(1);
+        }
+        return; // ✅ ignore duplicate
     }
     funcs[name] = sig;
 }
@@ -76,7 +81,14 @@ void SymbolTable::print() const {
         for (auto& [name, s] : scopes[i]) {
             std::cout << "    " << name << " : " << s.type
                       << " (" << irTypeName(s.irType) << ")";
-            if (s.isArray) std::cout << "[" << s.size << "]";
+            if (s.isArray) {
+                std::cout << "[";
+                for (size_t d = 0; d < s.dimensions.size(); ++d) {
+                    if (d > 0) std::cout << "][";
+                    std::cout << s.dimensions[d];
+                }
+                std::cout << "]";
+            }
             std::cout << "\n";
         }
     }

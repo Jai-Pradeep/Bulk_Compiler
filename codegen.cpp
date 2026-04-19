@@ -1,549 +1,455 @@
+
+
 #include "codegen.h"
 #include "ir.h"
 #include "symtab.h"
 #include <fstream>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <vector>
 #include <set>
 #include <unordered_map>
 #include <cstdlib>
 
+// ── C type mapping ────────────────────────────────────────────────────────────
 static std::string cType(IRType t) {
-    switch (t) {
+    switch(t) {
         case IRType::INT32:  return "int";
         case IRType::INT64:  return "long long";
         case IRType::INT128: return "__int128";
+        case IRType::FLOAT:  return "float";
+        case IRType::CHAR:   return "char";
+        case IRType::BOOL:   return "int";
         case IRType::VOID:   return "void";
         default:             return "int";
     }
 }
 
-static bool isTemp(const std::string& s) {
-    if (s.size() < 2 || s[0] != 't') return false;
-    for (size_t i = 1; i < s.size(); ++i)
-        if (!std::isdigit(s[i])) return false;
-    return true;
+static std::string printFmt(IRType t) {
+    switch(t) {
+        case IRType::INT64:  return "%lld";
+        case IRType::FLOAT:  return "%f";
+        case IRType::CHAR:   return "%c";
+        default:             return "%d";
+    }
 }
-
-static bool isLiteral(const std::string& s) {
-    if (s.empty()) return false;
-    size_t start = (s[0] == '-') ? 1 : 0;
-    if (start == s.size()) return false;
-    for (size_t i = start; i < s.size(); ++i)
-        if (!std::isdigit(s[i])) return false;
-    return true;
-}
-
-static bool isParallelComment(const std::string& s) {
-    return s.find("PARALLEL LOOP") != std::string::npos;
-        // && s.find("no loop-carried") != std::string::npos;
-}
-
-static bool isLargeLoop(const std::string& bound) {
-    if (!isLiteral(bound)) return false;
-    try {
-        return std::stoi(bound) > 10000;
-    } catch (...) {
-        return false;
+static std::string scanFmt(IRType t) {
+    switch(t) {
+        case IRType::INT64: return "%lld";
+        case IRType::FLOAT: return "%f";
+        case IRType::CHAR:  return " %c";
+        default:            return "%d";
     }
 }
 
-static std::unordered_map<std::string, IRType>
-collectTemps(size_t start, size_t end) {
-    std::unordered_map<std::string, IRType> temps;
-    for (size_t i = start; i < end && i < ir.size(); ++i) {
-        auto& ins = ir[i];
-        auto rec = [&](const std::string& n, IRType t) {
-            if (isTemp(n) && !temps.count(n))
-                temps[n] = (t != IRType::UNKNOWN) ? t : IRType::INT32;
+static bool isTemp(const std::string& s) {
+    if(s.size()<2||s[0]!='t') return false;
+    for(size_t i=1;i<s.size();++i) if(!std::isdigit(s[i])) return false;
+    return true;
+}
+static bool isLiteral(const std::string& s) {
+    if(s.empty()) return false;
+    size_t st=(s[0]=='-')?1:0;
+    if(st==s.size()) return false;
+    for(size_t i=st;i<s.size();++i) if(!std::isdigit(s[i])) return false;
+    return true;
+}
+static bool isParallelComment(const std::string& s){return s.find("PARALLEL LOOP")!=std::string::npos;}
+static bool isLargeLoop(const std::string& b){if(!isLiteral(b)) return false; try{return std::stoi(b)>10000;}catch(...){return false;}}
+
+static std::unordered_map<std::string,IRType> collectTemps(size_t start, size_t end) {
+    std::unordered_map<std::string,IRType> temps;
+    for(size_t i=start;i<end&&i<ir.size();++i){
+        auto& ins=ir[i];
+        auto rec=[&](const std::string& n,IRType t){
+            if(isTemp(n)&&!temps.count(n)) temps[n]=(t!=IRType::UNKNOWN)?t:IRType::INT32;
         };
-        rec(ins.result, ins.type);
-        rec(ins.arg1,   ins.type);
-        rec(ins.arg2,   ins.type);
+        rec(ins.result,ins.type); rec(ins.arg1,ins.type); rec(ins.arg2,ins.type);
     }
     return temps;
 }
 
-// ── Detect a parallel loop block in the IR ───────────────────────────────────
-//
-//  A parallel loop looks like:
-//    comment  "PARALLEL LOOP..."
-//    =        idxVar   0           (init)
-//    label    Lstart
-//    <op>     idxVar   N    tBound (bound check)
-//    ifzero   tBound   Lend
-//    < body instructions >
-//    +        idxVar   1    tStep  (increment)
-//    =        tStep    ""   idxVar
-//    goto     Lstart
-//    label    Lend
-//
-//  We detect this pattern and emit a proper C for loop with #pragma omp.
-//
 struct ParallelLoop {
-    bool   found    = false;
-    size_t commentIdx;          // index of PARALLEL LOOP comment
-    size_t initIdx;             // idxVar = 0
-    size_t lstartIdx;           // label Lstart
-    size_t boundIdx;            // tBound = idxVar < N
-    size_t ifzeroIdx;           // ifzero tBound Lend
-    size_t bodyStart;           // first body instruction
-    size_t bodyEnd;             // index of increment instruction
-    size_t gotoIdx;
-    size_t lendIdx;
-    std::string idxVar;
-    std::string bound;          // N as string
-    std::string Lstart, Lend;
+    bool found=false;
+    size_t commentIdx,initIdx,lstartIdx,boundIdx,ifzeroIdx,bodyStart,bodyEnd,gotoIdx,lendIdx;
+    std::string idxVar,bound,Lstart,Lend;
 };
 
-// ── CUDA Kernel Emission ──────────────────────────────────────────────────────
-static void emitCUDAKernel(const ParallelLoop& pl,
-                           const std::string& cuFile,
-                           const std::string& exeName) {
-    // For now, emit a simple CUDA kernel stub
-    // This is a template — real version would extract arrays from IR
-    std::ofstream cu(cuFile);
-    if (!cu) { std::cerr << "Error: cannot open " << cuFile << "\n"; return; }
-
-    cu << "// Generated CUDA kernel by BulkCompiler\n";
-    cu << "#include <stdio.h>\n\n";
-
-    cu << "__global__ void bulkKernel(int *a, int *b, int *c, int N) {\n";
-    cu << "    int i = blockIdx.x * blockDim.x + threadIdx.x;\n";
-    cu << "    if (i < N) {\n";
-    cu << "        c[i] = a[i] + b[i];\n";
-    cu << "    }\n";
-    cu << "}\n\n";
-
-    cu << "int main() {\n";
-    cu << "    int N = " << pl.bound << ";\n";
-    cu << "    int *d_a, *d_b, *d_c;\n";
-    cu << "    cudaMalloc(&d_a, N * sizeof(int));\n";
-    cu << "    cudaMalloc(&d_b, N * sizeof(int));\n";
-    cu << "    cudaMalloc(&d_c, N * sizeof(int));\n\n";
-    cu << "    int threads = 256;\n";
-    cu << "    int blocks = (N + threads - 1) / threads;\n";
-    cu << "    bulkKernel<<<blocks, threads>>>(d_a, d_b, d_c, N);\n\n";
-    cu << "    cudaFree(d_a);\n";
-    cu << "    cudaFree(d_b);\n";
-    cu << "    cudaFree(d_c);\n";
-    cu << "    return 0;\n";
-    cu << "}\n";
-    cu.close();
-
-    std::cout << "[Codegen] CUDA kernel written to: " << cuFile << "\n";
-
-    std::string cmd = "nvcc " + cuFile + " -o " + exeName + " 2>&1";
-    std::cout << "[Codegen] Compiling CUDA: " << cmd << "\n";
-    int ret = system(cmd.c_str());
-    if (ret == 0)
-        std::cout << "[Codegen] Success! Run with: ./" << exeName << "\n";
-    else
-        std::cerr << "[Codegen] nvcc failed — ensure CUDA toolkit is installed\n";
-}
-
-
-static ParallelLoop detectParallelLoop(size_t commentPos) {
+static ParallelLoop detectParallelLoop(size_t pos) {
     ParallelLoop pl;
-    size_t i = commentPos;
-
-    // Skip any extra comment lines (e.g. "parallel array: ...")
-    while (i < ir.size() && ir[i].op == "comment") ++i;
-
-    // init: idxVar = 0
-    if (i >= ir.size() || ir[i].op != "=") return pl;
-    if (ir[i].arg1 != "0") return pl;
-    pl.initIdx = i;
-    pl.idxVar  = ir[i].result;
-    ++i;
-
-    // label Lstart
-    if (i >= ir.size() || ir[i].op != "label") return pl;
-    pl.lstartIdx = i;
-    pl.Lstart    = ir[i].arg1;
-    ++i;
-
-    // tBound = idxVar < N
-    if (i >= ir.size()) return pl;
-    pl.boundIdx = i;
-    pl.bound    = ir[i].arg2;
-    std::string tBound = ir[i].result;
-    ++i;
-
-    // ifzero tBound Lend
-    if (i >= ir.size() || ir[i].op != "ifzero_goto") return pl;
-    if (ir[i].arg1 != tBound) return pl;
-    pl.ifzeroIdx = i;
-    pl.Lend      = ir[i].arg2;
-    ++i;
-
-    pl.bodyStart = i;
-
-    // Scan forward for:  tStep = idxVar + 1
-    while (i < ir.size()) {
-        if (ir[i].op == "+"
-            && ir[i].arg1 == pl.idxVar
-            && ir[i].arg2 == "1") break;
+    size_t i=pos;
+    while(i<ir.size()&&ir[i].op=="comment") ++i;
+    if(i>=ir.size()||ir[i].op!="="||ir[i].arg1!="0") return pl;
+    pl.initIdx=i; pl.idxVar=ir[i].result; ++i;
+    if(i>=ir.size()||ir[i].op!="label") return pl;
+    pl.lstartIdx=i; pl.Lstart=ir[i].arg1; ++i;
+    if(i>=ir.size()) return pl;
+    pl.boundIdx=i; pl.bound=ir[i].arg2;
+    std::string tBound=ir[i].result; ++i;
+    if(i>=ir.size()||ir[i].op!="ifzero_goto"||ir[i].arg1!=tBound) return pl;
+    pl.ifzeroIdx=i; pl.Lend=ir[i].arg2; ++i;
+    pl.bodyStart=i;
+    while(i<ir.size()){
+        if(ir[i].op=="+"&&ir[i].arg1==pl.idxVar&&ir[i].arg2=="1") break;
         ++i;
     }
-    if (i >= ir.size()) return pl;
-    pl.bodyEnd = i;
-    std::string tStep = ir[i].result;
+    if(i>=ir.size()) return pl;
+    pl.bodyEnd=i; std::string tStep=ir[i].result; ++i;
+    if(i>=ir.size()||ir[i].op!="="||ir[i].arg1!=tStep) return pl;
     ++i;
-
-    // idxVar = tStep
-    if (i >= ir.size() || ir[i].op != "=" || ir[i].arg1 != tStep) return pl;
-    ++i;
-
-    // goto Lstart
-    if (i >= ir.size() || ir[i].op != "goto" || ir[i].arg1 != pl.Lstart) return pl;
-    pl.gotoIdx = i;
-    ++i;
-
-    // label Lend
-    if (i >= ir.size() || ir[i].op != "label" || ir[i].arg1 != pl.Lend) return pl;
-    pl.lendIdx = i;
-
-    pl.found = true;
-    return pl;
+    if(i>=ir.size()||ir[i].op!="goto"||ir[i].arg1!=pl.Lstart) return pl;
+    pl.gotoIdx=i; ++i;
+    if(i>=ir.size()||ir[i].op!="label"||ir[i].arg1!=pl.Lend) return pl;
+    pl.lendIdx=i; pl.found=true; return pl;
 }
 
 // ── Emit one IR instruction as C ─────────────────────────────────────────────
-static std::string emitC(const IRInstruction& ins, const std::string& indent) {
-    if (ins.op == "label")       return ins.arg1 + ":;";
-    if (ins.op == "goto")        return indent + "goto " + ins.arg1 + ";";
-    if (ins.op == "ifzero_goto") return indent + "if (!(" + ins.arg1 + ")) goto " + ins.arg2 + ";";
-    if (ins.op == "comment")     return indent + "// " + ins.arg1;
-    if (ins.op == "param")       return "";
-    if (ins.op == "push_arg")    return "";
-    if (ins.op == "return") {
-        if (ins.arg1.empty()) return indent + "return;";
-        return indent + "return " + ins.arg1 + ";";
+static std::string emitC(const IRInstruction& ins, const std::string& ind) {
+    if(ins.op=="label")       return ins.arg1+":;";
+    if(ins.op=="goto")        return ind+"goto "+ins.arg1+";";
+    if(ins.op=="ifzero_goto") return ind+"if(!("+ins.arg1+")) goto "+ins.arg2+";";
+    if(ins.op=="comment")     return ind+"// "+ins.arg1;
+    if(ins.op=="param"||ins.op=="push_arg"||ins.op=="func_begin"||ins.op=="func_end") return "";
+    if(ins.op=="return"){
+        if(ins.arg1.empty()) return ind+"return;";
+        return ind+"return "+ins.arg1+";";
     }
-    if (ins.op == "cast")
-        return indent + ins.result + " = (" + cType(ins.type) + ") " + ins.arg1 + ";";
-    if (ins.op == "=")
-        return indent + ins.result + " = " + ins.arg1 + ";";
-    return indent + ins.result + " = " + ins.arg1 + " " + ins.op + " " + ins.arg2 + ";";
+    if(ins.op=="scan"){
+        IRType t=symtab.exists(ins.arg1)?symtab.get(ins.arg1).irType:IRType::INT32;
+        return ind+"scanf(\""+scanFmt(t)+"\", &"+ins.arg1+");";
+    }
+    if(ins.op=="scan"){
+        return ind+"scanf(\""+scanFmt(ins.type)+"\", &"+ins.arg1+");";
+    }
+    if(ins.op=="print"||ins.op=="println"){
+        std::string nl=(ins.op=="println")?"\\n":"";
+        return ind+"printf(\""+printFmt(ins.type)+nl+"\", "+ins.arg1+");";
+    }
+    if(ins.op=="str_const"){
+        return ind+ins.result+" = (int)(intptr_t)\""+ins.arg1+"\";";
+    }
+    if(ins.op=="alloc"){
+        return ind+ins.result+" = (int)(intptr_t)malloc(sizeof("+ins.arg1+")*"+ins.arg2+");";
+    }
+    if(ins.op=="free"){
+        return ind+"free((void*)(intptr_t)"+ins.arg1+");";
+    }
+    if(ins.op=="addr_of")  return ind+ins.result+" = (int)(intptr_t)&"+ins.arg1+";";
+    if(ins.op=="deref")    return ind+ins.result+" = *(int*)(intptr_t)"+ins.arg1+";";
+    if(ins.op=="field_read") return ind+ins.result+" = "+ins.arg1+"."+ins.arg2+";";
+    if(ins.op=="cast"){
+        std::string fromStr=ins.arg2; // "i32->i64" etc.
+        return ind+ins.result+" = ("+cType(ins.type)+")"+ins.arg1+";";
+    }
+    if(ins.op=="break")    return ind+"break;";
+    if(ins.op=="continue") return ind+"continue;";
+    if(ins.op=="="){
+        if(ins.arg2.empty()) return ind+ins.result+" = "+ins.arg1+";";
+        return ind+ins.result+" = "+ins.arg1+";";
+    }
+    if(ins.op=="neg") return ind+ins.result+" = -"+ins.arg2+";";
+    // binary / comparison
+    return ind+ins.result+" = "+ins.arg1+" "+ins.op+" "+ins.arg2+";";
 }
 
-// ── Emit a range of IR as C, handling parallel loops ─────────────────────────
-static void emitRange(std::ofstream& out,
-                      size_t start, size_t end,
-                      const std::string& indent,
-                      bool useCUDA = false,
-                      const std::string& exeName = "",
-                      const std::string& cuFile = "")
+// ── Emit a range of IR as C, handling parallel loops and calls ───────────────
+static void emitRange(std::ostream& out, size_t start, size_t end,
+                      const std::string& ind, bool useCUDA=false,
+                      const std::string& exeName="", const std::string& cuFile="")
 {
     std::vector<std::string> pendingArgs;
-
-    size_t i = start;
-    while (i < end && i < ir.size()) {
-        auto& ins = ir[i];
-
-        // Detect parallel loop
-        if (ins.op == "comment" && isParallelComment(ins.arg1)) {
-            ParallelLoop pl = detectParallelLoop(i);
-            if (pl.found) {
-                // Debug output
-                std::cerr << "[DEBUG] Parallel loop detected: idxVar=" << pl.idxVar 
-                          << ", bound=" << pl.bound << ", useCUDA=" << useCUDA 
-                          << ", isLarge=" << isLargeLoop(pl.bound) << "\n";
-                
-                // Choose backend: CUDA for large loops, OpenMP for others
-                if (useCUDA && isLargeLoop(pl.bound)) {
-                    // Emit CUDA kernel
-                    std::cerr << "[DEBUG] Emitting CUDA kernel...\n";
-                    emitCUDAKernel(pl, cuFile, exeName);
-                    out << indent << "// CUDA kernel generated and compiled\n";
+    for(size_t i=start; i<end&&i<ir.size(); ++i){
+        auto& ins=ir[i];
+        if(ins.op=="comment"&&isParallelComment(ins.arg1)){
+            ParallelLoop pl=detectParallelLoop(i);
+            if(pl.found){
+                if(useCUDA&&isLargeLoop(pl.bound)){
+                    out<<ind<<"// CUDA kernel would run here for loop bound="<<pl.bound<<"\n";
                 } else {
-                    // Emit as proper C for loop with OpenMP pragma
-                    out << "\n";
-                    out << indent << "// auto-parallelised by BulkCompiler\n";
-                    out << indent << "#pragma omp parallel for schedule(static)\n";
-                    out << indent << "for (int " << pl.idxVar << " = 0; "
-                        << pl.idxVar << " < " << pl.bound << "; "
-                        << "++" << pl.idxVar << ") {\n";
-
-                    // Emit body
-                    emitRange(out, pl.bodyStart, pl.bodyEnd, indent + "    ", useCUDA, exeName, cuFile);
-
-                    out << indent << "}\n";
+                    out<<"\n"<<ind<<"#pragma omp parallel for schedule(static)\n";
+                    out<<ind<<"for(int "<<pl.idxVar<<"=0; "
+                        <<pl.idxVar<<"<"<<pl.bound<<"; ++"<<pl.idxVar<<") {\n";
+                    emitRange(out, pl.bodyStart, pl.bodyEnd, ind+"    ", useCUDA, exeName, cuFile);
+                    out<<ind<<"}\n";
                 }
-
-                // Skip past the whole loop pattern
-                i = pl.lendIdx + 1;
-                continue;
+                i=pl.lendIdx; continue;
             }
-            // Not a clean parallel loop — fall through to emit as comment
         }
-
-        if (ins.op == "func_begin" || ins.op == "func_end" || ins.op == "param") {
-            ++i; continue;
-        }
-
-        if (ins.op == "push_arg") {
-            pendingArgs.push_back(ins.arg1);
-            ++i; continue;
-        }
-
-        if (ins.op == "call") {
+        if(ins.op=="func_begin"||ins.op=="func_end"||ins.op=="param") continue;
+        if(ins.op=="push_arg"){ pendingArgs.push_back(ins.arg1); continue; }
+        if(ins.op=="call"){
             std::string al;
-            for (size_t a = 0; a < pendingArgs.size(); ++a) {
-                if (a) al += ", ";
-                al += pendingArgs[a];
-            }
+            for(size_t a=0;a<pendingArgs.size();++a){if(a) al+=", "; al+=pendingArgs[a];}
             pendingArgs.clear();
-            if (ins.result.empty())
-                out << indent << ins.arg1 << "(" << al << ");\n";
-            else
-                out << indent << ins.result << " = " << ins.arg1
-                    << "(" << al << ");\n";
-            ++i; continue;
+            if(ins.result.empty()) out<<ind<<ins.arg1<<"("<<al<<");\n";
+            else out<<ind<<ins.result<<" = "<<ins.arg1<<"("<<al<<");\n";
+            continue;
         }
-
-        std::string line = emitC(ins, indent);
-        if (!line.empty()) out << line << "\n";
-        ++i;
+        std::string line=emitC(ins,ind);
+        if(!line.empty()) out<<line<<"\n";
     }
 }
 
-// ── Main entry point ──────────────────────────────────────────────────────────
-void generateCode(const std::string& cFile, const std::string& exeName, bool useCUDA) {
+// ── Main code generation ──────────────────────────────────────────────────────
+void generateCode(const std::string& cFile, const std::string& exeName, bool useCUDA)
+{
+    std::string cuFile=exeName+".cu";
 
-    // Setup filenames for CUDA if needed
-    std::string cuFile = exeName + ".cu";
-
-    // Pass 1: find function boundaries
-    struct FuncRange { size_t begin, end; std::string name; IRType ret; };
+    // Identify function ranges
+    struct FuncRange { std::string name; IRType ret; size_t begin, end; };
     std::vector<FuncRange> funcs;
     std::set<size_t> inFuncIdx;
-
-    for (size_t i = 0; i < ir.size(); ++i) {
-        if (ir[i].op == "func_begin") {
-            FuncRange fr;
-            fr.name  = ir[i].arg1;
-            fr.ret   = ir[i].type;
-            fr.begin = i;
-            for (size_t j = i+1; j < ir.size(); ++j) {
-                if (ir[j].op == "func_end" && ir[j].arg1 == fr.name) {
-                    fr.end = j;
-                    funcs.push_back(fr);
-                    i = j;
-                    break;
-                }
+    for(size_t i=0;i<ir.size();++i){
+        if(ir[i].op=="func_begin"){
+            FuncRange fr; fr.name=ir[i].arg1; fr.ret=ir[i].type; fr.begin=i;
+            for(size_t j=i+1;j<ir.size();++j){
+                if(ir[j].op=="func_end"&&ir[j].arg1==fr.name){fr.end=j;funcs.push_back(fr);i=j;break;}
             }
         }
     }
-    for (auto& fr : funcs)
-        for (size_t k = fr.begin; k <= fr.end; ++k)
-            inFuncIdx.insert(k);
+    for(auto& fr:funcs) for(size_t k=fr.begin;k<=fr.end;++k) inFuncIdx.insert(k);
 
-    // Write C file
+    // Build global index list
+    std::vector<size_t> globalIdxs;
+    for(size_t i=0;i<ir.size();++i) if(!inFuncIdx.count(i)) globalIdxs.push_back(i);
+
     std::ofstream out(cFile);
-    if (!out) { std::cerr << "Error: cannot open " << cFile << "\n"; return; }
+    if(!out){std::cerr<<"Error: cannot open "<<cFile<<"\n"; return;}
 
-    out << "// Generated by BulkCompiler\n";
-    out << "// Compile: gcc -O2 -fopenmp " << cFile << " -o " << exeName << "\n\n";
-    out << "#include <stdio.h>\n#include <stdlib.h>\n#include <omp.h>\n\n";
+    out<<"// Generated by BulkCompiler\n";
+    out<<"// Compile: gcc -O2 -fopenmp "<<cFile<<" -o "<<exeName<<"\n\n";
+    out<<"#include <stdio.h>\n#include <stdlib.h>\n#include <stdint.h>\n#include <omp.h>\n\n";
 
     // Forward declarations
-    for (auto& fr : funcs) {
+    for(auto& fr:funcs){
         std::string params;
-        for (size_t j = fr.begin+1; j < ir.size() && ir[j].op == "param"; ++j) {
-            if (!params.empty()) params += ", ";
-            params += cType(ir[j].type) + " " + ir[j].arg1;
+        for(size_t j=fr.begin+1;j<ir.size()&&ir[j].op=="param";++j){
+            if(!params.empty()) params+=", ";
+            params+=cType(ir[j].type)+" "+ir[j].arg1;
         }
-        out << cType(fr.ret) << " " << fr.name << "(" << params << ");\n";
+        out<<cType(fr.ret)<<" "<<fr.name<<"("<<params<<");\n";
     }
-    if (!funcs.empty()) out << "\n";
+    if(!funcs.empty()) out<<"\n";
 
-    // Global variable declarations from symbol table
-    for (auto& [name, sym] : symtab.globalSymbols()) {
-        if (sym.isArray)
-            out << cType(sym.irType) << " " << name << "[" << sym.size << "] = {0};\n";
-        else
-            out << cType(sym.irType) << " " << name << " = 0;\n";
+    // Global variable declarations
+    for(auto& [name,sym]:symtab.globalSymbols()){
+        if(sym.isArray){
+            // Emit: int mat[3][4] = {0};
+            out<<cType(sym.irType)<<" "<<name;
+            for(auto dim : sym.dimensions)
+                out<<"["<<dim<<"]";
+            out<<" = {0};\n";
+        } else {
+            out<<cType(sym.irType)<<" "<<name<<" = 0;\n";
+        }
     }
-    out << "\n";
+    out<<"\n";
 
     // Function definitions
-    for (auto& fr : funcs) {
+    for(auto& fr:funcs){
         std::string params;
-        size_t bodyStart = fr.begin + 1;
-        while (bodyStart < ir.size() && ir[bodyStart].op == "param") {
-            if (!params.empty()) params += ", ";
-            params += cType(ir[bodyStart].type) + " " + ir[bodyStart].arg1;
+        size_t bodyStart=fr.begin+1;
+        while(bodyStart<ir.size()&&ir[bodyStart].op=="param"){
+            if(!params.empty()) params+=", ";
+            params+=cType(ir[bodyStart].type)+" "+ir[bodyStart].arg1;
             ++bodyStart;
         }
-        out << cType(fr.ret) << " " << fr.name << "(" << params << ") {\n";
-        auto temps = collectTemps(bodyStart, fr.end);
-        for (auto& [name, type] : temps)
-            out << "    " << cType(type) << " " << name << " = 0;\n";
-        if (!temps.empty()) out << "\n";
-        emitRange(out, bodyStart, fr.end, "    ", useCUDA, exeName, cuFile);
-        out << "}\n\n";
+        out<<cType(fr.ret)<<" "<<fr.name<<"("<<params<<") {\n";
+        auto temps=collectTemps(bodyStart,fr.end);
+        for(auto& [n,t]:temps) out<<"    "<<cType(t)<<" "<<n<<" = 0;\n";
+        if(!temps.empty()) out<<"\n";
+        emitRange(out,bodyStart,fr.end,"    ",useCUDA,exeName,cuFile);
+        out<<"}\n\n";
     }
 
     // main()
-    out << "int main(int argc, char* argv[]) {\n";
+    out<<"int main(int argc, char* argv[]) {\n";
 
-    // Declare global-scope temps
-    auto allTemps = collectTemps(0, ir.size());
-    for (auto& fr : funcs) {
-        auto ft = collectTemps(fr.begin, fr.end+1);
-        for (auto& [k,v] : ft) allTemps.erase(k);
+    // Declare global-scope temps (excluding function temps)
+    auto allTemps=collectTemps(0,ir.size());
+    for(auto& fr:funcs){
+        auto ft=collectTemps(fr.begin,fr.end+1);
+        for(auto& [k,v]:ft) allTemps.erase(k);
     }
-    for (auto& [name, type] : allTemps)
-        out << "    " << cType(type) << " " << name << " = 0;\n";
-    if (!allTemps.empty()) out << "\n";
+    for(auto& [n,t]:allTemps) out<<"    "<<cType(t)<<" "<<n<<" = 0;\n";
+    if(!allTemps.empty()) out<<"\n";
 
-    // Emit global-scope IR (skip function bodies)
-    // Build index list excluding func body indices
-    emitRange(out, 0, ir.size(), "    ");
-    // But emitRange will encounter func_begin/end and skip them — that's fine
-    // However we need to skip indices that are inside functions
-    // emitRange already skips func_begin/func_end/param instructions
-    // The body instructions inside functions will also be encountered
-    // Let's fix this properly:
-    out.seekp(0); // can't seek in ofstream easily, so close and redo main
-    out.close();
-
-    // Reopen and redo main() section properly
-    std::ofstream out2(cFile, std::ios::app);
-    // We already wrote everything up to and including function defs
-    // Now we need to redo main — but we've already written it partially
-    // This is getting complex. Let's just build a clean string buffer.
-    out2.close();
-
-    // Clean approach: rebuild file from scratch with proper main
-    std::ofstream final(cFile);
-    final << "// Generated by BulkCompiler\n";
-    final << "// Compile: gcc -O2 -fopenmp " << cFile << " -o " << exeName << "\n\n";
-    final << "#include <stdio.h>\n#include <stdlib.h>\n#include <omp.h>\n\n";
-
-    for (auto& fr : funcs) {
-        std::string params;
-        for (size_t j = fr.begin+1; j < ir.size() && ir[j].op == "param"; ++j) {
-            if (!params.empty()) params += ", ";
-            params += cType(ir[j].type) + " " + ir[j].arg1;
-        }
-        final << cType(fr.ret) << " " << fr.name << "(" << params << ");\n";
-    }
-    if (!funcs.empty()) final << "\n";
-
-    for (auto& [name, sym] : symtab.globalSymbols()) {
-        if (sym.isArray)
-            final << cType(sym.irType) << " " << name << "[" << sym.size << "] = {0};\n";
-        else
-            final << cType(sym.irType) << " " << name << " = 0;\n";
-    }
-    final << "\n";
-
-    for (auto& fr : funcs) {
-        std::string params;
-        size_t bodyStart = fr.begin + 1;
-        while (bodyStart < ir.size() && ir[bodyStart].op == "param") {
-            if (!params.empty()) params += ", ";
-            params += cType(ir[bodyStart].type) + " " + ir[bodyStart].arg1;
-            ++bodyStart;
-        }
-        final << cType(fr.ret) << " " << fr.name << "(" << params << ") {\n";
-        auto temps = collectTemps(bodyStart, fr.end);
-        for (auto& [name, type] : temps)
-            final << "    " << cType(type) << " " << name << " = 0;\n";
-        if (!temps.empty()) final << "\n";
-        emitRange(final, bodyStart, fr.end, "    ", useCUDA, exeName, cuFile);
-        final << "}\n\n";
-    }
-
-    final << "int main(int argc, char* argv[]) {\n";
-
-    // Declare only truly global-scope temps
-    for (auto& [name, type] : allTemps)
-        final << "    " << cType(type) << " " << name << " = 0;\n";
-    if (!allTemps.empty()) final << "\n";
-
-    // Emit only global-scope instructions
-    // We need a version of emitRange that skips function bodies
-    std::vector<size_t> globalIdxs;
-    for (size_t i = 0; i < ir.size(); ++i)
-        if (!inFuncIdx.count(i)) globalIdxs.push_back(i);
-
-    // Write a filtered IR range using the index list
+    // Emit global-scope IR
     std::vector<std::string> pendingArgs;
-    size_t gi = 0;
-    while (gi < globalIdxs.size()) {
-        size_t i = globalIdxs[gi];
-        auto& ins = ir[i];
-
-        if (ins.op == "comment" && isParallelComment(ins.arg1)) {
-            // Try to detect parallel loop using consecutive global indices
-            ParallelLoop pl = detectParallelLoop(i);
-            if (pl.found) {
-                final << "\n";
-                final << "    // auto-parallelised by BulkCompiler\n";
-                
-                // Choose backend: CUDA for large loops, OpenMP for others
-                if (useCUDA && isLargeLoop(pl.bound)) {
-                    std::cerr << "[DEBUG] Emitting CUDA kernel in main loop...\n";
-                    emitCUDAKernel(pl, cuFile, exeName);
-                    final << "    // CUDA kernel generated and compiled\n";
+    size_t gi=0;
+    while(gi<globalIdxs.size()){
+        size_t i=globalIdxs[gi];
+        auto& ins=ir[i];
+        if(ins.op=="comment"&&isParallelComment(ins.arg1)){
+            ParallelLoop pl=detectParallelLoop(i);
+            if(pl.found){
+                if(useCUDA&&isLargeLoop(pl.bound)){
+                    out<<"    // CUDA kernel for loop bound="<<pl.bound<<"\n";
                 } else {
-                    final << "    #pragma omp parallel for schedule(static)\n";
-                    final << "    for (int " << pl.idxVar << " = 0; "
-                          << pl.idxVar << " < " << pl.bound << "; "
-                          << "++" << pl.idxVar << ") {\n";
-                    // Body
-                    emitRange(final, pl.bodyStart, pl.bodyEnd, "        ", useCUDA, exeName, cuFile);
-                    final << "    }\n";
+                    out<<"\n    // auto-parallelised by BulkCompiler\n";
+                    out<<"    #pragma omp parallel for schedule(static)\n";
+                    out<<"    for(int "<<pl.idxVar<<"=0; "
+                       <<pl.idxVar<<"<"<<pl.bound<<"; ++"<<pl.idxVar<<") {\n";
+                    emitRange(out,pl.bodyStart,pl.bodyEnd,"        ",useCUDA,exeName,cuFile);
+                    out<<"    }\n";
                 }
-                // Skip all global indices up through lendIdx
-                while (gi < globalIdxs.size() && globalIdxs[gi] <= pl.lendIdx) ++gi;
+                while(gi<globalIdxs.size()&&globalIdxs[gi]<=pl.lendIdx) ++gi;
                 continue;
             }
         }
-
-        if (ins.op == "func_begin" || ins.op == "func_end" || ins.op == "param") {
-            ++gi; continue;
-        }
-        if (ins.op == "push_arg") { pendingArgs.push_back(ins.arg1); ++gi; continue; }
-        if (ins.op == "call") {
+        if(ins.op=="func_begin"||ins.op=="func_end"||ins.op=="param"){++gi;continue;}
+        if(ins.op=="push_arg"){pendingArgs.push_back(ins.arg1);++gi;continue;}
+        if(ins.op=="call"){
             std::string al;
-            for (size_t a = 0; a < pendingArgs.size(); ++a) {
-                if (a) al += ", ";
-                al += pendingArgs[a];
-            }
+            for(size_t a=0;a<pendingArgs.size();++a){if(a) al+=", ";al+=pendingArgs[a];}
             pendingArgs.clear();
-            if (ins.result.empty())
-                final << "    " << ins.arg1 << "(" << al << ");\n";
-            else
-                final << "    " << ins.result << " = " << ins.arg1 << "(" << al << ");\n";
-            ++gi; continue;
+            if(ins.result.empty()) out<<"    "<<ins.arg1<<"("<<al<<");\n";
+            else out<<"    "<<ins.result<<" = "<<ins.arg1<<"("<<al<<");\n";
+            ++gi;continue;
         }
-
-        std::string line = emitC(ins, "    ");
-        if (!line.empty()) final << line << "\n";
+        std::string line=emitC(ins,"    ");
+        if(!line.empty()) out<<line<<"\n";
         ++gi;
     }
+    out<<"    return 0;\n}\n";
+    out.close();
 
-    final << "    return 0;\n}\n";
-    final.close();
+    std::cout<<"[Codegen] C file written to: "<<cFile<<"\n";
 
-    std::cout << "[Codegen] C file written to: " << cFile << "\n";
+    std::string cmd="gcc -O2 -fopenmp "+cFile+" -o "+exeName+" 2>&1";
+    std::cout<<"[Codegen] Compiling: "<<cmd<<"\n";
+    int ret=system(cmd.c_str());
+    if(ret==0) std::cout<<"[Codegen] Success! Run with: ./"<<exeName<<"\n";
+    else std::cerr<<"[Codegen] gcc failed — see errors above\n";
+}
 
-    if (useCUDA) {
-        std::cout << "[Codegen] CUDA mode enabled. CUDA kernels compiled separately.\n";
-        std::cout << "[Codegen] If CUDA kernels exist, link with: nvcc " << cuFile 
-                  << " -o " << exeName << "\n";
+// ── Assembly generation ───────────────────────────────────────────────────────
+void generateAssembly(const std::string& cFile, const std::string& outFile,
+                      const std::string& arch)
+{
+    std::string flag;
+    if(arch=="x86")     flag="-m32";
+    else if(arch=="x86_64") flag="";
+    else if(arch=="arm")  flag="--target=arm-linux-gnueabi";
+    else if(arch=="riscv") flag="-march=rv64gc -mabi=lp64d";
+
+    std::string cmd="gcc -S -O2 "+flag+" "+cFile+" -o "+outFile+" 2>&1";
+    std::cout<<"[ASM] Generating "<<arch<<" assembly: "<<cmd<<"\n";
+    int r=system(cmd.c_str());
+    if(r==0) std::cout<<"[ASM] Assembly written to: "<<outFile<<"\n";
+    else std::cerr<<"[ASM] Failed\n";
+}
+
+// ── CFG dot file generation ───────────────────────────────────────────────────
+void generateCFG(const std::string& dotFile)
+{
+    std::ofstream out(dotFile);
+    if(!out){std::cerr<<"Error: cannot open "<<dotFile<<"\n";return;}
+
+    out<<"digraph CFG {\n";
+    out<<"  node [shape=box fontname=\"Courier\" fontsize=10];\n";
+
+    // Split IR into basic blocks
+    struct Block { std::string id; std::vector<std::string> instrs; std::vector<std::string> succs; };
+    std::vector<Block> blocks;
+    std::unordered_map<std::string,int> labelToBlock;
+
+    // Determine leaders (first instr, targets of jumps, instr after jump)
+    std::set<size_t> leaders;
+    leaders.insert(0);
+    for(size_t i=0;i<ir.size();++i){
+        if(ir[i].op=="goto"||ir[i].op=="ifzero_goto"||ir[i].op=="return"){
+            if(i+1<ir.size()) leaders.insert(i+1);
+        }
+        if(ir[i].op=="label") leaders.insert(i);
     }
 
-    std::string cmd = "gcc -O2 -fopenmp " + cFile + " -o " + exeName + " 2>&1";
-    std::cout << "[Codegen] Compiling: " << cmd << "\n";
-    int ret = system(cmd.c_str());
-    if (ret == 0)
-        std::cout << "[Codegen] Success! Run with: ./" << exeName << "\n";
-    else
-        std::cerr << "[Codegen] gcc failed — see errors above\n";
+    // Build blocks
+    int bn=0;
+    for(auto it=leaders.begin();it!=leaders.end();++it){
+        Block b;
+        b.id="B"+std::to_string(bn++);
+        auto next=std::next(it);
+        size_t end=(next!=leaders.end())?*next:ir.size();
+        for(size_t j=*it;j<end;++j){
+            if(ir[j].op=="label") labelToBlock[ir[j].arg1]=(int)blocks.size();
+            std::string txt=ir[j].op;
+            if(!ir[j].arg1.empty()) txt+=" "+ir[j].arg1;
+            if(!ir[j].arg2.empty()) txt+=" "+ir[j].arg2;
+            if(!ir[j].result.empty()) txt=" "+ir[j].result+"="+txt;
+            b.instrs.push_back(txt);
+        }
+        blocks.push_back(b);
+    }
+
+    // Add edges
+    for(size_t b=0;b<blocks.size();++b){
+        // find last real instruction
+        auto& blk=blocks[b];
+        auto it=std::next(leaders.begin(),b);
+        auto nxt=std::next(it);
+        size_t end=(nxt!=leaders.end())?*nxt:ir.size();
+        if(end==0) continue;
+        auto& last=ir[end-1];
+        if(last.op=="goto"){
+            auto tit=labelToBlock.find(last.arg1);
+            if(tit!=labelToBlock.end()) blk.succs.push_back("B"+std::to_string(tit->second));
+        } else if(last.op=="ifzero_goto"){
+            if(b+1<blocks.size()) blk.succs.push_back("B"+std::to_string(b+1));
+            auto tit=labelToBlock.find(last.arg2);
+            if(tit!=labelToBlock.end()) blk.succs.push_back("B"+std::to_string(tit->second));
+        } else if(last.op!="return"){
+            if(b+1<blocks.size()) blk.succs.push_back("B"+std::to_string(b+1));
+        }
+    }
+
+    // Emit nodes
+    for(auto& b:blocks){
+        out<<"  "<<b.id<<" [label=\""<<b.id<<"\\n";
+        for(auto& ins:b.instrs) {
+            std::string esc=ins;
+            for(char& c:esc) if(c=='"') c='\'';
+            out<<esc<<"\\l";
+        }
+        out<<"\"];\n";
+    }
+    // Emit edges
+    for(auto& b:blocks)
+        for(auto& s:b.succs)
+            out<<"  "<<b.id<<" -> "<<s<<";\n";
+
+    out<<"}\n";
+    out.close();
+    std::cout<<"[CFG] Dot file written to: "<<dotFile<<"\n";
+    // Try to render
+    int r=system(("dot -Tpng "+dotFile+" -o "+dotFile+".png 2>/dev/null").c_str());
+    if(r==0) std::cout<<"[CFG] PNG rendered to: "<<dotFile<<".png\n";
+}
+
+// ── AST dot file (pretty print) ───────────────────────────────────────────────
+void generateOptReport(const std::string& outFile, size_t before, size_t after, int level)
+{
+    std::ofstream out(outFile);
+    out<<"=== Optimization Report ===\n";
+    out<<"Level: -O"<<level<<"\n";
+    out<<"IR instructions before: "<<before<<"\n";
+    out<<"IR instructions after:  "<<after<<"\n";
+    if(before>after) out<<"Removed: "<<(before-after)<<" instructions\n";
+    else out<<"No instructions removed\n";
+    out<<"\nPasses applied:\n";
+    if(level>=1){
+        out<<"  [x] Constant folding\n";
+        out<<"  [x] Constant propagation\n";
+        out<<"  [x] Copy propagation\n";
+        out<<"  [x] Common subexpression elimination\n";
+        out<<"  [x] Loop-invariant code motion\n";
+        out<<"  [x] Dead code elimination\n";
+    }
+    if(level>=2){
+        out<<"  [x] All O1 passes repeated until stable\n";
+        out<<"  [x] Peephole optimization\n";
+    }
+    out.close();
+    std::cout<<"[Opt] Report written to: "<<outFile<<"\n";
 }

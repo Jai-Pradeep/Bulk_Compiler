@@ -18,11 +18,18 @@
 
 "func"          { return FUNC; }
 "return"        { return RETURN; }
+"scan"          { return SCAN; }
+"print"         { return PRINT; }
 
 "if"            { return IF; }
 "else"          { return ELSE; }
 "while"         { return WHILE; }
 "for"           { return FOR; }
+"switch"        { return SWITCH; }
+"case"          { return CASE; }
+"default"       { return DEFAULT; }
+"break"         { return BREAK; }
+"continue"      { return CONTINUE; }
 
 [0-9]+          { yylval.num = atoi(yytext); return NUMBER; }
 
@@ -39,6 +46,12 @@
 "&&"            { return AND; }
 "||"            { return OR; }
 "!"             { return NOT; }
+"<<"            { return LSHIFT; }
+">>"            { return RSHIFT; }
+"&"             { return BAND; }
+"|"             { return BOR; }
+"^"             { return BXOR; }
+"~"             { return BNOT; }
 
 "="             { return ASSIGN; }
 "!="            { return NEQ; }
@@ -57,9 +70,13 @@
 "["             { return LBRACKET; }
 "]"             { return RBRACKET; }
 
-"//".*          ;
-[ \t\r\n]+      ;
+[ \t\r\n]+      
+
+"#".*     ;
+"//".*    ;
+
 .               { printf("Unknown character: %s\n", yytext); }
+
 
 %%
 
