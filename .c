@@ -7,16 +7,20 @@
 #include <omp.h>
 
 int i = 0;
-int c[5000000] = {0};
-int b[5000000] = {0};
-int a[5000000] = {0};
+int a[10] = {0};
 
 int main(int argc, char* argv[]) {
+    int t6 = 0;
     int t5 = 0;
     int t4 = 0;
-    int t3 = 0;
 
-    // CUDA kernel emitted for loop bound=5000000
-    // See: .cu
+    i = 0;
+
+    // auto-parallelised by BulkCompiler
+    #pragma omp parallel for schedule(static)
+    for (int i = 0; i < 5; ++i) {
+        t5 = i * 2;
+        a[i] = t5;
+    }
     return 0;
 }

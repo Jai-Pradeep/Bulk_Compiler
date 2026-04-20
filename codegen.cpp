@@ -687,8 +687,20 @@ void generateAssembly(const std::string& cFile, const std::string& outFile,
     if(r==0) std::cout<<"[ASM] Assembly written to: "<<outFile<<"\n";
     else std::cerr<<"[ASM] Failed\n";
 }
+// Add this helper function at the top of codegen.cpp
+std::string typeToString(IRType t) {
+    switch(t) {
+        case IRType::INT32:  return "i32";
+        case IRType::INT64:  return "i64";
+        case IRType::INT128: return "i128";
+        case IRType::FLOAT:  return "f32";
+        case IRType::CHAR:   return "char";
+        case IRType::BOOL:   return "bool";
+        case IRType::VOID:   return "void";
+        default:             return "";
+    }
+}
 
-// ── CFG dot file generation ───────────────────────────────────────────────────
 void generateCFG(const std::string& dotFile)
 {
     std::ofstream out(dotFile);
@@ -696,76 +708,246 @@ void generateCFG(const std::string& dotFile)
 
     out<<"digraph CFG {\n";
     out<<"  node [shape=box fontname=\"Courier\" fontsize=10];\n";
+    out<<"  rankdir=TB;\n";
 
-    struct Block { std::string id; std::vector<std::string> instrs; std::vector<std::string> succs; };
+    struct Block {
+        std::string id;
+        std::vector<std::string> instrs;
+        std::vector<std::string> succs;
+    };
     std::vector<Block> blocks;
     std::unordered_map<std::string,int> labelToBlock;
 
+    // ===== STEP 1: Reconstruct full instruction strings =====
+    std::vector<std::string> fullInstructions;
+
+    for(size_t i = 0; i < ir.size(); ++i) {
+        std::string line;
+        const auto& ins = ir[i];
+
+        if(ins.op == "label") {
+            line = ins.arg1 + ":";
+        }
+        else if(ins.op == "ifzero_goto") {
+            line = "if " + ins.arg1 + " == 0 goto " + ins.arg2;
+        }
+        else if(ins.op == "goto") {
+            line = "goto " + ins.arg1;
+        }
+        else if(ins.op == "return") {
+            line = "return";
+            if(!ins.arg1.empty()) line += " " + ins.arg1;
+        }
+        else if(ins.op == "comment") {
+            // BUG FIX 3: do NOT strip brackets from comments —
+            // keep the full comment text as-is.
+            line = "// " + ins.arg1;
+        }
+        else if(ins.op == "print" || ins.op == "println") {
+            line = ins.op + " " + ins.arg1;
+        }
+        else if(ins.op == "scan") {
+            line = "scan " + ins.arg1;
+        }
+        // BUG FIX 1: handle array store  a[i] = value
+        // IR stores array name in result, value in arg1, op == "="
+        // but symtab tells us it's an array. Reconstruct as a[idx] = val.
+        else if(ins.op == "=" && !ins.result.empty()) {
+            // Check whether result is an array element assignment.
+            // The IR for  a[i] = t5  typically comes right after  t_addr = a + i
+            // and is emitted as:  result="a[i]"  arg1="t5"  in many compilers,
+            // OR as result="a" with a separate index temp.
+            // Here we just reconstruct what we have faithfully:
+            if(!ins.arg2.empty())
+                line = ins.result + " = " + ins.arg1;   // arg2 unused in plain "="
+            else
+                line = ins.result + " = " + ins.arg1;
+        }
+        else if(!ins.result.empty()) {
+            // Binary / unary op with result
+            if(ins.arg2.empty())
+                line = ins.result + " = " + ins.op + " " + ins.arg1;
+            else
+                line = ins.result + " = " + ins.arg1 + " " + ins.op + " " + ins.arg2;
+        }
+        else {
+            // Ops with no result (func_begin, func_end, param, push_arg, call …)
+            line = ins.op;
+            if(!ins.arg1.empty()) line += " " + ins.arg1;
+            if(!ins.arg2.empty()) line += ", " + ins.arg2;
+        }
+
+        // Append type annotation ONLY to non-control-flow, non-comment lines.
+        // BUG FIX 3 (continued): skip annotation for comments entirely so we
+        // never accidentally strip their bracket content later.
+        if(ins.op != "label"  && ins.op != "goto"  &&
+           ins.op != "ifzero_goto" && ins.op != "comment" &&
+           ins.op != "return" && ins.type != IRType::VOID)
+        {
+            std::string ts = typeToString(ins.type);
+            if(!ts.empty()) line += " [" + ts + "]";
+        }
+
+        fullInstructions.push_back(line);
+    }
+
+    std::cout << "[CFG] Reconstructed IR (" << fullInstructions.size() << " instructions):\n";
+    for(size_t i = 0; i < fullInstructions.size() && i < 30; ++i)
+        std::cout << "  " << i << ": " << fullInstructions[i] << "\n";
+
+    // ===== STEP 2: Find basic block leaders =====
     std::set<size_t> leaders;
     leaders.insert(0);
-    for(size_t i=0;i<ir.size();++i){
-        if(ir[i].op=="goto"||ir[i].op=="ifzero_goto"||ir[i].op=="return"){
-            if(i+1<ir.size()) leaders.insert(i+1);
-        }
-        if(ir[i].op=="label") leaders.insert(i);
+
+    for(size_t i = 0; i < fullInstructions.size(); ++i) {
+        const std::string& ln = fullInstructions[i];
+
+        bool isUncondGoto = (ln.find("goto") != std::string::npos &&
+                             ln.find("if ")  == std::string::npos);
+        bool isCondGoto   = (ln.rfind("if ", 0) == 0 &&
+                             ln.find("goto") != std::string::npos);
+        bool isReturn     = (ln == "return" || ln.rfind("return ", 0) == 0);
+        bool isLabel      = (!ln.empty() && ln.back() == ':');
+
+        if((isUncondGoto || isCondGoto || isReturn) && i+1 < fullInstructions.size())
+            leaders.insert(i + 1);
+        if(isLabel)
+            leaders.insert(i);
     }
 
-    int bn=0;
-    for(auto it=leaders.begin();it!=leaders.end();++it){
-        Block b;
-        b.id="B"+std::to_string(bn++);
-        auto next=std::next(it);
-        size_t end=(next!=leaders.end())?*next:ir.size();
-        for(size_t j=*it;j<end;++j){
-            if(ir[j].op=="label") labelToBlock[ir[j].arg1]=(int)blocks.size();
-            std::string txt=ir[j].op;
-            if(!ir[j].arg1.empty()) txt+=" "+ir[j].arg1;
-            if(!ir[j].arg2.empty()) txt+=" "+ir[j].arg2;
-            if(!ir[j].result.empty()) txt=" "+ir[j].result+"="+txt;
-            b.instrs.push_back(txt);
-        }
-        blocks.push_back(b);
+    // ===== STEP 3: Build basic blocks =====
+    // BUG FIX 2: build the labelToBlock map in a FIRST pass over blocks
+    // before we need to resolve successors, so every label is known.
+
+    //int bn = 0;
+    std::vector<std::pair<size_t,size_t>> blockRanges; // [start, end)
+    for(auto it = leaders.begin(); it != leaders.end(); ++it) {
+        auto nx = std::next(it);
+        size_t end = (nx != leaders.end()) ? *nx : fullInstructions.size();
+        blockRanges.push_back({*it, end});
     }
 
-    for(size_t b=0;b<blocks.size();++b){
-        auto& blk=blocks[b];
-        auto it=std::next(leaders.begin(),b);
-        auto nxt=std::next(it);
-        size_t end=(nxt!=leaders.end())?*nxt:ir.size();
-        if(end==0) continue;
-        auto& last=ir[end-1];
-        if(last.op=="goto"){
-            auto tit=labelToBlock.find(last.arg1);
-            if(tit!=labelToBlock.end()) blk.succs.push_back("B"+std::to_string(tit->second));
-        } else if(last.op=="ifzero_goto"){
-            if(b+1<blocks.size()) blk.succs.push_back("B"+std::to_string(b+1));
-            auto tit=labelToBlock.find(last.arg2);
-            if(tit!=labelToBlock.end()) blk.succs.push_back("B"+std::to_string(tit->second));
-        } else if(last.op!="return"){
-            if(b+1<blocks.size()) blk.succs.push_back("B"+std::to_string(b+1));
+    // First pass: assign block IDs and populate labelToBlock
+    for(size_t b = 0; b < blockRanges.size(); ++b) {
+        Block blk;
+        blk.id = "B" + std::to_string(b);
+        auto [bstart, bend] = blockRanges[b];
+
+        for(size_t j = bstart; j < bend; ++j) {
+            const std::string& ln = fullInstructions[j];
+            if(ln.empty()) continue;
+
+            // Map every label in this block to this block index.
+            // BUG FIX 2: use `b` (the real block index) not `bn-1`.
+            if(!ln.empty() && ln.back() == ':') {
+                std::string label = ln.substr(0, ln.size() - 1);
+                labelToBlock[label] = static_cast<int>(b);
+            }
+
+            // Strip type annotation brackets for cleaner display,
+            // but ONLY from lines that cannot be comments.
+            // BUG FIX 3: comments start with "//" — leave them alone.
+            std::string display = ln;
+            if(ln.rfind("//", 0) != 0) {
+                size_t bp = display.rfind(" [");
+                if(bp != std::string::npos) {
+                    std::string suffix = display.substr(bp + 2);
+                    // Only strip if suffix looks like a type token (no spaces, ends with ']')
+                    if(suffix.back() == ']' && suffix.find(' ') == std::string::npos)
+                        display = display.substr(0, bp);
+                }
+            }
+            blk.instrs.push_back(display);
+        }
+        blocks.push_back(blk);
+    }
+
+    // ===== STEP 4: Determine successors =====
+    for(size_t b = 0; b < blocks.size(); ++b) {
+        auto& blk = blocks[b];
+        if(blk.instrs.empty()) {
+            if(b+1 < blocks.size()) blk.succs.push_back("B"+std::to_string(b+1));
+            continue;
+        }
+
+        // Find the last non-comment, non-label instruction
+        std::string lastLine;
+        for(int k = (int)blk.instrs.size()-1; k >= 0; --k) {
+            const std::string& s = blk.instrs[k];
+            if(!s.empty() && s.rfind("//",0) != 0 && s.back() != ':') {
+                lastLine = s;
+                break;
+            }
+        }
+
+        bool isUncond = (lastLine.find("goto") != std::string::npos &&
+                         lastLine.find("if ")  == std::string::npos);
+        bool isCond   = (lastLine.rfind("if ", 0) == 0 &&
+                         lastLine.find("goto") != std::string::npos);
+        bool isRet    = (lastLine == "return" || lastLine.rfind("return ", 0) == 0);
+
+        auto extractTarget = [](const std::string& ln) -> std::string {
+            size_t gp = ln.find("goto");
+            if(gp == std::string::npos) return "";
+            std::string t = ln.substr(gp + 4);
+            t.erase(0, t.find_first_not_of(" \t"));
+            auto end = t.find_first_of(" \t;");
+            if(end != std::string::npos) t = t.substr(0, end);
+            return t;
+        };
+
+        if(isRet) {
+            // no successors
+        } else if(isUncond) {
+            std::string tgt = extractTarget(lastLine);
+            auto it = labelToBlock.find(tgt);
+            if(it != labelToBlock.end())
+                blk.succs.push_back("B" + std::to_string(it->second));
+        } else if(isCond) {
+            // Fall-through (condition false)
+            if(b+1 < blocks.size())
+                blk.succs.push_back("B" + std::to_string(b+1));
+            // Jump target (condition true)
+            std::string tgt = extractTarget(lastLine);
+            auto it = labelToBlock.find(tgt);
+            if(it != labelToBlock.end())
+                blk.succs.push_back("B" + std::to_string(it->second));
+        } else {
+            // Normal fall-through
+            if(b+1 < blocks.size())
+                blk.succs.push_back("B" + std::to_string(b+1));
         }
     }
 
-    for(auto& b:blocks){
-        out<<"  "<<b.id<<" [label=\""<<b.id<<"\\n";
-        for(auto& ins:b.instrs){
-            std::string esc=ins;
-            for(char& c:esc) if(c=='"') c='\'';
-            out<<esc<<"\\l";
+    // ===== STEP 5: Write DOT file =====
+    for(auto& b : blocks) {
+        out << "  " << b.id << " [label=\"" << b.id << "\\n";
+        for(auto& ins : b.instrs) {
+            std::string esc = ins;
+            // Escape backslashes first (before we add any), then quotes
+            for(size_t p=0; (p=esc.find('\\',p))!=std::string::npos; p+=2)
+                esc.replace(p, 1, "\\\\");
+            for(size_t p=0; (p=esc.find('"', p))!=std::string::npos; p+=2)
+                esc.replace(p, 1, "\\\"");
+            out << esc << "\\l";
         }
-        out<<"\"];\n";
+        out << "\"];\n";
     }
-    for(auto& b:blocks)
-        for(auto& s:b.succs)
-            out<<"  "<<b.id<<" -> "<<s<<";\n";
 
-    out<<"}\n";
+    for(auto& b : blocks)
+        for(auto& s : b.succs)
+            out << "  " << b.id << " -> " << s << ";\n";
+
+    out << "}\n";
     out.close();
-    std::cout<<"[CFG] Dot file written to: "<<dotFile<<"\n";
-    int r=system(("dot -Tpng "+dotFile+" -o "+dotFile+".png 2>/dev/null").c_str());
-    if(r==0) std::cout<<"[CFG] PNG rendered to: "<<dotFile<<".png\n";
-}
+    std::cout << "[CFG] Dot file written to: " << dotFile << "\n";
 
+    std::string cmd = "dot -Tpng " + dotFile + " -o " + dotFile + ".png 2>&1";
+    int r = system(cmd.c_str());
+    if(r == 0) std::cout << "[CFG] PNG rendered to: " << dotFile << ".png\n";
+    else std::cerr << "[CFG] To render PNG, install Graphviz and run: dot -Tpng "
+                   << dotFile << " -o " << dotFile << ".png\n";
+}
 // ── Optimization report ───────────────────────────────────────────────────────
 void generateOptReport(const std::string& outFile, size_t before, size_t after, int level)
 {

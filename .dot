@@ -1,0 +1,13 @@
+digraph CFG {
+  node [shape=box fontname="Courier" fontsize=10];
+  B0 [label="B0\n i== 0\lcomment PARALLEL LOOP — fully parallel, all iterations independent [SIMD/multi-thread safe]\lcomment   parallel array: a[i]\l i== 0\l"];
+  B1 [label="B1\nlabel L1\l t4=< i 5\lifzero_goto t4 L3\l"];
+  B2 [label="B2\n t5=* i 2\l a[i]== t5\l"];
+  B3 [label="B3\nlabel L2\l t6=+ i 1\l i== t6\lgoto L1\l"];
+  B4 [label="B4\nlabel L3\l"];
+  B0 -> B1;
+  B1 -> B2;
+  B1 -> B4;
+  B2 -> B3;
+  B3 -> B1;
+}

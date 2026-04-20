@@ -4,14 +4,17 @@
 ; Types:   i32 / i64 / i128
 ; ─────────────────────────────────────────────────────────────────
 
-    // PARALLEL LOOP [0..4999999]  -- no loop-carried dependencies, SIMD/thread-safe
-    i_L1 = 0  [i32]
+    i = 0  [i32]
+    // PARALLEL LOOP — fully parallel, all iterations independent [SIMD/multi-thread safe]
+    //   parallel array: a[i]
+    i = 0  [i32]
 L1:
-    t3 = i_L1 < 5000000  [i32]
-    if t3 == 0 goto L2
-    t4 = a[i_L1] + b[i_L1]  [i32]
-    c[i_L1] = t4  [i32]
-    t5 = i_L1 + 1  [i32]
-    i_L1 = t5  [i32]
-    goto L1
+    t4 = i < 5  [i32]
+    if t4 == 0 goto L3
+    t5 = i * 2  [i32]
+    a[i] = t5  [i32]
 L2:
+    t6 = i + 1  [i32]
+    i = t6  [i32]
+    goto L1
+L3:
