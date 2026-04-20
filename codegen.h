@@ -22,3 +22,6 @@
 //    generateCode("output.c", "program", true);   // CUDA
 //
 void generateCode(const std::string& cFile, const std::string& exeName, bool useCUDA = false);
+void generateOptReport(const std::string& outFile, size_t before, size_t after, int level);
+void generateCFG(const std::string& dotFile);
+void generateAssembly(const std::string& cFile, const std::string& outFile, const std::string& arch);
