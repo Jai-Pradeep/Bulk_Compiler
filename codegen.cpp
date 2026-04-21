@@ -373,13 +373,13 @@ static void emitCUDAKernel(const ParallelLoop& pl,
     cu.close();
 
     std::cout << "[Codegen] CUDA kernel written to: " << cuFile << "\n";
-
+    std::string gpuExe = exeName + "_gpu";
     // Attempt compilation with nvcc
-    std::string cmd = "nvcc " + cuFile + " -o " + exeName + " 2>&1";
+    std::string cmd = "nvcc " + cuFile + " -o " + gpuExe + " 2>&1";
     std::cout << "[Codegen] Compiling CUDA: " << cmd << "\n";
     int ret = system(cmd.c_str());
     if(ret == 0)
-        std::cout << "[Codegen] Success! Run with: ./" << exeName << "\n";
+        std::cout << "[Codegen] Success! Run with: ./" << gpuExe << "\n";
     else
         std::cerr << "[Codegen] nvcc failed — ensure CUDA toolkit is installed\n";
 }
@@ -651,7 +651,9 @@ void generateCode(const std::string& cFile, const std::string& exeName, bool use
         if (!line.empty()) out << line << "\n";
         ++gi;
     }
- 
+
+    std::string cpuExe = exeName + "_cpu";
+    std::string gpuExe = exeName + "_gpu";
     out << "    return 0;\n}\n";
     out.close();
  
@@ -659,14 +661,14 @@ void generateCode(const std::string& cFile, const std::string& exeName, bool use
  
     if (useCUDA) {
         std::cout << "[Codegen] CUDA mode active. Large loops (>10000) also emit .cu kernels.\n";
-        std::cout << "[Codegen] Link CUDA binary with: nvcc " << cuFile << " -o " << exeName << "\n";
+        //std::cout << "[Codegen] Link CUDA binary with: nvcc " << cuFile << " -o " << gpuExe << "\n";
     }
  
-    std::string cmd = "gcc -O2 -fopenmp " + cFile + " -o " + exeName + " 2>&1";
+    std::string cmd = "gcc -O2 -fopenmp " + cFile + " -o " + cpuExe + " 2>&1";
     std::cout << "[Codegen] Compiling C: " << cmd << "\n";
     int ret = system(cmd.c_str());
     if (ret == 0)
-        std::cout << "[Codegen] Success! Run with: ./" << exeName << "\n";
+        std::cout << "[Codegen] Success! Run with: ./" << cpuExe << "\n";
     else
         std::cerr << "[Codegen] gcc failed — see errors above\n";
 }
