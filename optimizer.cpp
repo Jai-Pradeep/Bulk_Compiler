@@ -101,6 +101,15 @@ static bool copyPropagation() {
     bool changed = false;
     std::unordered_map<std::string, std::string> copyMap;
 
+    // Build jump target set locally — labels jumped to are merge points
+    // and must clear the map. Fall-through labels (nobody jumps to them)
+    // can be crossed without invalidating propagation.
+    std::unordered_set<std::string> jumpTargets;
+    for (auto& ins : ir) {
+        if (ins.op == "goto")        jumpTargets.insert(ins.arg1);
+        if (ins.op == "ifzero_goto") jumpTargets.insert(ins.arg2);
+    }
+
     auto substitute = [&](std::string& operand) {
         if (operand.empty()) return;
         auto it = copyMap.find(operand);
@@ -108,10 +117,13 @@ static bool copyPropagation() {
     };
 
     for (auto& ins : ir) {
-        if (ins.op == "label" ||
-            ins.op == "func_begin" ||
-            ins.op == "func_end") {
+        if (ins.op == "func_begin" || ins.op == "func_end") {
             copyMap.clear();
+            continue;
+        }
+        if (ins.op == "label") {
+            if (jumpTargets.count(ins.arg1))
+                copyMap.clear();
             continue;
         }
 
@@ -147,8 +159,13 @@ static bool isArrayStore(const IRInstruction& ins) {
     // Array stores are emitted as op="=" with result like "arr[i]" or "mat[i][j]"
     return !ins.result.empty() && ins.result.find('[') != std::string::npos;
 }
-
 static bool deadCodeElimination() {
+    // TEMPORARY DEBUG
+    printf("  [DCE DEBUG] IR at DCE entry:\n");
+    for (size_t i = 0; i < ir.size(); ++i)
+        printf("    [%zu] op=\"%s\" result=\"%s\" arg1=\"%s\" arg2=\"%s\"\n",
+               i, ir[i].op.c_str(), ir[i].result.c_str(),
+               ir[i].arg1.c_str(), ir[i].arg2.c_str());
     // ── Build the used-temp set ───────────────────────────────────────────────
     // We must scan EVERY field of every instruction, extracting temps even when
     // they appear as array indices embedded in strings like "arr[t13]".
@@ -158,7 +175,8 @@ static bool deadCodeElimination() {
         // Plain operand fields
         extractTemps(ins.arg1,   used);
         extractTemps(ins.arg2,   used);
-        extractTemps(ins.result, used);   // e.g. result = "arr[t16]" for stores
+        if (!isTemp(ins.result))
+            extractTemps(ins.result, used);  // e.g. result = "arr[t16]" for stores
 
         // call result is always considered used (side-effectful)
         if (ins.op == "call" && isTemp(ins.result))
@@ -304,6 +322,15 @@ static bool loopInvariantCodeMotion() {
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 void optimizeIR(int level) {
+    // printf("  [DEBUG] Raw IR entering optimizer:\n");
+    // for (size_t i = 0; i < ir.size(); ++i) {
+    //     printf("    [%zu] op=\"%s\" result=\"%s\" arg1=\"%s\" arg2=\"%s\"\n",
+    //            i,
+    //            ir[i].op.c_str(),
+    //            ir[i].result.c_str(),
+    //            ir[i].arg1.c_str(),
+    //            ir[i].arg2.c_str());
+    // }
     size_t before = ir.size();
     printf("  IR instructions before : %zu\n", before);
 
@@ -324,9 +351,21 @@ void optimizeIR(int level) {
             bool p = copyPropagation();
             bool c = commonSubexpressionElimination();
             bool l = loopInvariantCodeMotion();
-            changed = f || p || c || l;
+            // BUG FIX: DCE must run INSIDE the loop, not after it.
+            //
+            // Why: copyPropagation() rewrites  k = t7  →  k = 1000, eliminating
+            // the only use of t7. But t7's defining instruction  t7 = 1000  is
+            // still in the IR. DCE is the only pass that removes it, and it needs
+            // to see the post-propagation use-set to know t7 is now dead.
+            //
+            // Placing DCE outside means it only ever runs once with the ORIGINAL
+            // use-set (before propagation cleaned up), so t7 still appears "used"
+            // and survives. Running it inside the loop gives it a fresh use-set
+            // each round, and its return value feeds back into `changed` so the
+            // loop continues until the IR is fully stable.
+            bool d = deadCodeElimination();
+            changed = f || p || c || l || d;
         }
-        deadCodeElimination();
         printf("  Passes run             : folding+propagation (%d rounds) + dead-code\n", rounds);
     }
 

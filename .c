@@ -3,31 +3,24 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <omp.h>
 
-int a[1000] = {0};
-int c[1000] = {0};
 int i = 0;
+int a[10] = {0};
 
 int main(int argc, char* argv[]) {
+    int t6 = 0;
     int t5 = 0;
     int t4 = 0;
-    int t6 = 0;
-    int t1 = 0;
 
-    t1 = a[i] + b[i];
-    c[i] = t1;
-    // PARALLEL LOOP — fully parallel, all iterations independent [SIMD/multi-thread safe]
-    //   parallel array: c[i]
     i = 0;
-L2:;
-    t4 = i < 1000;
-    if (!(t4)) goto L3;
-    t5 = a[i] + b[i];
-    c[i] = t5;
-    t6 = i + 1;
-    i = t6;
-    goto L2;
-L3:;
+
+    // auto-parallelised by BulkCompiler
+    #pragma omp parallel for schedule(static)
+    for (int i = 0; i < 5; ++i) {
+        t5 = i * 2;
+        a[i] = t5;
+    }
     return 0;
 }
