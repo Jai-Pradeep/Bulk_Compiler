@@ -1,133 +1,156 @@
 
+<div align="center">
 
-##  Step-by-step: How to run
+# Bulk Compiler
 
-###  1. Compile (you already did this)
+A custom compiler for a bulk-processing language supporting arrays, parallel loops, and multiple backends (IR, C, CUDA). This project demonstrates a full compiler pipeline: parsing, semantic analysis, IR generation, optimization, code generation, and backend integration.
+</div>
 
+---
+
+
+## Requirements
+
+- **C++17** compiler (e.g., `g++`)
+- **Flex** (lexical analyzer generator)
+- **Bison** (parser generator)
+- **GCC** (for C backend, with OpenMP support)
+- **CUDA Toolkit** (for CUDA backend, optional)
+- **Graphviz** (for CFG PNG output, optional)
+
+### Ubuntu/Debian Install:
 ```bash
-make
-```
-
-This creates:
-
-```bash
-compiler
+sudo apt update
+sudo apt install build-essential flex bison gcc g++ graphviz
+# For CUDA backend (optional):
+sudo apt install nvidia-cuda-toolkit
 ```
 
 ---
 
-###  2. Prepare input file
+## Build Instructions
 
-You must have a file like:
-
-```bash
-program.bc
-```
-
-(Our custom language input)
-
----
-
-###  3. Run the compiler
-
-###  Basic run (no optimization)
-
-```bash
-./compiler < program.bc
-```
-
- Output:
-
-* `output.ir` file created
+1. **Clone the repository** (if not already):
+   ```bash
+   git clone https://github.com/Jai-Pradeep/Bulk_Compiler.git
+   cd Bulk_Compiler
+   git checkout v2
+   ```
+2. **Build the compiler:**
+   ```bash
+   make
+   ```
+   This produces the `compiler` executable.
 
 ---
 
-###  With optimization
+## Usage
 
 ```bash
-./compiler -O2 < program.bc
-```
-
-Uses:
-
-* constant folding
-* copy propagation
-* dead code elimination
-
----
-
-###  Custom output name
-
-```bash
-./compiler -O1 -o myprog < program.bc
-```
-
- Output:
-
-```
-myprog.ir
+./compiler [options] < input.bc
 ```
 
 ---
 
-###  Generate C + executable
+### Options
+
+* `-o <name>`
+  Output base name (default: `output`)
+
+  * Without `--emit-c`: generates `<name>.ir`
+  * With `--emit-c`: generates `<name>.c` and executable `<name>_cpu`
+
+* Optimization Levels:
+
+  * `-O0` → No optimization (default)
+  * `-O1` → Constant folding + copy propagation + dead code elimination
+  * `-O2` → O1 + repeated passes until convergence
+
+* Code Generation:
+
+  * `--emit-c` → Generate C code and compile (uses `gcc -fopenmp`)
+  * `--ir-only` → Only generate IR (default behavior)
+
+* CUDA Support:
+
+  * `--cuda` → Generate CUDA kernel (`.cu`) for large loops (also enables C generation)
+
+* CFG:
+
+  * `--emit-cfg` → Generate CFG `.dot` file (+ PNG if Graphviz installed)
+
+* Reports:
+
+  * `--opt-report` → Generate optimization report (`<name>.opt.txt`)
+
+* Help:
+
+  * `-h`, `--help` → Show usage
+* Compilation
+    
+  * `./<name>_cpu` for executing c file
+  * `./<name>_gpu` for executing cu file
+  * `time ./<name>_cpu` or `time ./<name>_gpu` for time analysis
+  * File ending with `UO` are unoptimised code, written to  check the performance 
+   - example : `test_CUDA_UO.c(u)`
+
+  ---
+
+### Examples
 
 ```bash
-./compiler -O2 --emit-c -o myprog < program.bc
+# Generate optimized IR
+./compiler -O2 < prog.bc
+
+# Generate parallel executable
+./compiler -O2 --emit-c -o prog < prog.bc
+
+# Generate CFG
+./compiler --emit-cfg -o prog < prog.bc
+
+# Optimization report
+./compiler -O1 --opt-report -o prog < prog.bc
+
+# All together
+./compiler -O2 --emit-c --cuda --emit-cfg --opt-report -o myprog < prog.bc
 ```
 
- This will:
 
-1. Generate `myprog.c`
-2. Compile it using `gcc -fopenmp`
-3. Create executable:
+## Features
 
-```bash
-./myprog
-```
+- **Custom Language**: Supports `int32`, `float`, `char`, `bool`, arrays, functions, control flow (`if`, `for`, `while`), and I/O (`scan`, `print`).
+- **Intermediate Representation (IR)**: Three-address code with explicit temporaries and labels.
+- **Optimizations**: Constant folding, copy propagation, dead code elimination, common subexpression elimination, loop-invariant code motion.
+- **Parallelism**: Detects parallelizable loops and emits OpenMP or CUDA code.
+- **Multiple Backends**:
+  - IR output (.ir)
+  - C code generation (.c)
+  - Executable via GCC (`-fopenmp`)
+  - CUDA kernel emission (.cu)
+  - Assembly output (`.s`)
+  - Control Flow Graph (CFG) generation (.dot/PNG)
+- **Extensive Error Checking**: Redeclaration, undeclared variables, type mismatches, etc.
+- **Test Suite**: See Test for sample programs and error cases.
 
 ---
 
-###  CUDA mode (if supported)
+## Project Structure
 
-```bash
-./compiler --cuda -o gpu_prog < program.bc
-```
+- main.cpp         — Entry point, argument parsing, pipeline control
+- lexer.l          — Flex lexer (tokenizes input)
+- parser.y         — Bison parser (generates AST)
+- `ast.h/cpp`        — Abstract Syntax Tree nodes and IR generation
+- `symtab.h/cpp`     — Symbol table (scoped variables, functions)
+- `ir.h/cpp`         — IR instruction definitions and helpers
+- `optimizer.h/cpp`  — IR optimizations
+- `depcheck.h/cpp`   — Loop dependency analysis for parallelism
+- `codegen.h/cpp`    — C/CUDA/Assembly code generation, backend integration
+- Test            — Test cases (valid and error programs)
+- Makefile         — Build rules (including Flex/Bison integration)
 
 ---
 
-##  Example workflow (IMPORTANT for exam)
+## License
 
-```bash
-make
-./compiler -O2 -o test < input.bc
-cat test.ir
-```
+This project is for educational and research use. Attribution required for reuse.
 
-OR:
-
-```bash
-./compiler -O2 --emit-c -o test < input.bc
-./test
-```
-
-## To Run all Test cases at once
-```bash
-mkdir -p Answers logs
-
-for f in Test/*.bc; do
-    name=$(basename "$f" .bc)
-    echo "=== Running $name ==="
-
-    ./compiler -O2 --emit-c --cuda --emit-cfg --opt-report -o Answers/$name \
-        < "$f" \
-        > logs/$name.out \
-        2> logs/$name.err
-
-    if [ -s logs/$name.err ]; then
-        echo "❌ Error in $name"
-    else
-        echo "✅ Success: $name"
-    fi
-done
-```
