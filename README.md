@@ -119,7 +119,7 @@ for f in Test/*.bc; do
     name=$(basename "$f" .bc)
     echo "=== Running $name ==="
 
-    ./compiler -O2 --emit-c --cuda -o Answers/$name \
+    ./compiler -O2 --emit-c --cuda --emit-cfg --opt-report -o Answers/$name \
         < "$f" \
         > logs/$name.out \
         2> logs/$name.err
