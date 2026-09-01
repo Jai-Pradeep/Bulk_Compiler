@@ -22,11 +22,11 @@ lex.yy.cpp: lexer.l parser.tab.h
 	mv lex.yy.c lex.yy.cpp
 
 test_for: compiler
-	./compiler -o simple_for.ir < simple_for.bc
+	./compiler -o simple_for.ir < ./Test/simple_for.bc
 	@echo ""; cat simple_for.ir
 
 test_bubble: compiler
-	./compiler -o bubble_sort.ir < bubble_sort.bc
+	./compiler -o bubble_sort.ir < ./Test/bubble_sort.bc
 	@echo ""; cat bubble_sort.ir
 
 clean:

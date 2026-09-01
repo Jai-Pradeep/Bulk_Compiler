@@ -678,10 +678,11 @@ void generateAssembly(const std::string& cFile, const std::string& outFile,
                       const std::string& arch)
 {
     std::string flag;
+    std::string compiler;
     if(arch=="x86")       flag="-m32";
     else if(arch=="x86_64") flag="";
-    else if(arch=="arm")    flag="--target=arm-linux-gnueabi";
-    else if(arch=="riscv")  flag="-march=rv64gc -mabi=lp64d";
+    else if(arch=="arm")    {compiler = "arm-linux-gnueabi-gcc"; flag = "";}
+    else if(arch=="riscv")  {compiler = "riscv64-linux-gnu-gcc"; flag = "-march=rv64gc -mabi=lp64d";}
 
     std::string cmd="gcc -S -O2 "+flag+" "+cFile+" -o "+outFile+" 2>&1";
     std::cout<<"[ASM] Generating "<<arch<<" assembly: "<<cmd<<"\n";

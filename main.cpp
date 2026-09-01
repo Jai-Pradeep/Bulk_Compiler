@@ -7,6 +7,7 @@
 #include "codegen.h"
 
 extern int yyparse();
+// Without this line, if you try to call yyparse() inside your main.cpp, the compiler will throw an error like: error: ‘yyparse’ was not declared in this scope.
 
 static void printUsage(const char* prog) {
     printf("\nUsage: %s [options] < input.bc\n\n", prog);
