@@ -1,0 +1,20 @@
+; ── Three-Address IR ──────────────────────────────────────────────
+; Format:  result = arg1 OP arg2  [type]
+; Cast:    dest   = (toType) src   [srcType->toType]
+; Types:   i32 / i64 / i128
+; ─────────────────────────────────────────────────────────────────
+
+    i = 0  [i32]
+    // PARALLEL LOOP — fully parallel, all iterations independent [SIMD/multi-thread safe]
+    //   parallel array: a[i]
+    i = 0  [i32]
+L1:
+    t4 = i < 5  [i32]
+    if t4 == 0 goto L3
+    t5 = i * 2  [i32]
+    a[i] = t5  [i32]
+L2:
+    t6 = i + 1  [i32]
+    i = t6  [i32]
+    goto L1
+L3:
